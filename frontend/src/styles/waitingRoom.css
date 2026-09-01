@@ -1,0 +1,159 @@
+.waiting-page {
+  min-height: 100vh;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: Arial, sans-serif;
+}
+
+.waiting-card {
+  width: 100%;
+  max-width: 430px;
+  background: white;
+  border-radius: 20px;
+  padding: 40px 32px;
+  text-align: center;
+  box-shadow: 0 15px 50px rgba(0, 0, 0, 0.12);
+}
+
+.waiting-logo {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 24px;
+  border-radius: 14px;
+  background: #2563eb;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.waiting-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 22px;
+  border-radius: 50%;
+  background: #eff6ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+}
+
+.denied-icon {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.waiting-card h1 {
+  margin: 0 0 10px;
+  color: #111827;
+  font-size: 28px;
+}
+
+.waiting-card > p {
+  color: #6b7280;
+  margin-bottom: 28px;
+  line-height: 1.5;
+}
+
+.waiting-user {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  padding: 15px;
+  background: #f8fafc;
+  border-radius: 14px;
+  margin-bottom: 20px;
+}
+
+.waiting-avatar {
+  width: 45px;
+  height: 45px;
+  border-radius: 50%;
+  background: #dbeafe;
+  color: #2563eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.waiting-user strong {
+  display: block;
+  color: #111827;
+  margin-bottom: 4px;
+}
+
+.waiting-user span {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.waiting-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #4b5563;
+  font-size: 14px;
+  margin-bottom: 28px;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.waiting-cancel-btn,
+.waiting-primary-btn {
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  padding: 13px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.waiting-cancel-btn {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.waiting-cancel-btn:hover {
+  background: #e2e8f0;
+}
+
+.waiting-primary-btn {
+  background: #2563eb;
+  color: white;
+}
+
+.waiting-primary-btn:hover {
+  background: #1d4ed8;
+}
+
+.waiting-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid #dbeafe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  margin: 20px auto 0;
+  animation: waiting-spin 0.8s linear infinite;
+}
+
+@keyframes waiting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
