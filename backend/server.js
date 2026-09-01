@@ -24,7 +24,7 @@ const server = http.createServer(app);
 // CORS
 // =====================================================
 
-const CLIENT_URL = "http://localhost:5173";
+const CLIENT_URL = "https://real-time-communication-app-beige.vercel.app";
 
 app.use(
   cors({
