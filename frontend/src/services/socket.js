@@ -1,6 +1,6 @@
 import { io } from "socket.io-client";
 
-const socket = io("http://localhost:5000", {
+const socket = io("https://real-time-communication-app-1-dniy.onrender.com", {
   autoConnect: false,
   withCredentials: true,
 });
