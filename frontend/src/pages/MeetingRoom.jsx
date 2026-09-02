@@ -2976,7 +2976,7 @@ const MeetingRoom = () => {
                     "file" ? (
                       <a
                         className="chat-file"
-                        href={`http://localhost:5000/${msg.fileUrl}`}
+                        href={`https://real-time-communication-app-ipnm.onrender.com/${msg.fileUrl}`}
                         target="_blank"
                         rel="noreferrer"
                       >

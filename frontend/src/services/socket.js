@@ -1,7 +1,7 @@
 
 import { io } from "socket.io-client";
 
-const SOCKET_URL = "http://localhost:5000";
+const SOCKET_URL = "https://real-time-communication-app-ipnm.onrender.com";
 
 const socket = io(SOCKET_URL, {
   autoConnect: false,
