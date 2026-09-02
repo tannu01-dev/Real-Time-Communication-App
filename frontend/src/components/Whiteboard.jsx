@@ -9,34 +9,74 @@ const Whiteboard = ({ meetingId, onClose }) => {
   const [color, setColor] = useState("#000000");
   const [lineWidth, setLineWidth] = useState(3);
 
-  // ==========================================
-  // CANVAS SETUP
-  // ==========================================
+  // =====================================================
+  // CANVAS
+  // =====================================================
 
-  useEffect(() => {
+  const setupCanvas = () => {
     const canvas = canvasRef.current;
 
     if (!canvas) return;
 
-    const resizeCanvas = () => {
-      const rect =
-        canvas.getBoundingClientRect();
+    const wrapper =
+      canvas.parentElement;
 
-      const oldCanvas =
-        document.createElement("canvas");
+    const rect =
+      wrapper.getBoundingClientRect();
 
-      oldCanvas.width = canvas.width;
-      oldCanvas.height = canvas.height;
+    const dpr =
+      window.devicePixelRatio || 1;
 
+    const oldCanvas =
+      document.createElement("canvas");
+
+    oldCanvas.width =
+      canvas.width;
+
+    oldCanvas.height =
+      canvas.height;
+
+    if (
+      canvas.width &&
+      canvas.height
+    ) {
       oldCanvas
         .getContext("2d")
-        .drawImage(canvas, 0, 0);
+        .drawImage(
+          canvas,
+          0,
+          0
+        );
+    }
 
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+    canvas.width =
+      rect.width * dpr;
 
-      const ctx = canvas.getContext("2d");
+    canvas.height =
+      rect.height * dpr;
 
+    canvas.style.width =
+      `${rect.width}px`;
+
+    canvas.style.height =
+      `${rect.height}px`;
+
+    const ctx =
+      canvas.getContext("2d");
+
+    ctx.setTransform(
+      dpr,
+      0,
+      0,
+      dpr,
+      0,
+      0
+    );
+
+    if (
+      oldCanvas.width &&
+      oldCanvas.height
+    ) {
       ctx.drawImage(
         oldCanvas,
         0,
@@ -45,29 +85,53 @@ const Whiteboard = ({ meetingId, onClose }) => {
         oldCanvas.height,
         0,
         0,
-        canvas.width,
-        canvas.height
+        rect.width,
+        rect.height
       );
-    };
+    }
+  };
 
-    resizeCanvas();
+  useEffect(() => {
+    setupCanvas();
 
     window.addEventListener(
       "resize",
-      resizeCanvas
+      setupCanvas
     );
 
     return () => {
       window.removeEventListener(
         "resize",
-        resizeCanvas
+        setupCanvas
       );
     };
   }, []);
 
-  // ==========================================
-  // DRAW LINE
-  // ==========================================
+  // =====================================================
+  // GET NORMALIZED POINT
+  // =====================================================
+
+  const getPoint = (e) => {
+    const canvas =
+      canvasRef.current;
+
+    const rect =
+      canvas.getBoundingClientRect();
+
+    return {
+      x:
+        (e.clientX - rect.left) /
+        rect.width,
+
+      y:
+        (e.clientY - rect.top) /
+        rect.height,
+    };
+  };
+
+  // =====================================================
+  // DRAW
+  // =====================================================
 
   const drawLine = (
     from,
@@ -76,32 +140,52 @@ const Whiteboard = ({ meetingId, onClose }) => {
     width,
     emit = true
   ) => {
-    const canvas = canvasRef.current;
+    const canvas =
+      canvasRef.current;
 
     if (!canvas) return;
+
+    const rect =
+      canvas.getBoundingClientRect();
 
     const ctx =
       canvas.getContext("2d");
 
+    const fromX =
+      from.x * rect.width;
+
+    const fromY =
+      from.y * rect.height;
+
+    const toX =
+      to.x * rect.width;
+
+    const toY =
+      to.y * rect.height;
+
     ctx.beginPath();
 
     ctx.moveTo(
-      from.x,
-      from.y
+      fromX,
+      fromY
     );
 
     ctx.lineTo(
-      to.x,
-      to.y
+      toX,
+      toY
     );
 
     ctx.strokeStyle =
       lineColor;
 
-    ctx.lineWidth = width;
+    ctx.lineWidth =
+      width;
 
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
+    ctx.lineCap =
+      "round";
+
+    ctx.lineJoin =
+      "round";
 
     ctx.stroke();
 
@@ -121,38 +205,40 @@ const Whiteboard = ({ meetingId, onClose }) => {
     }
   };
 
-  // ==========================================
-  // MOUSE DOWN
-  // ==========================================
+  // =====================================================
+  // START DRAWING
+  // =====================================================
 
-  const handleMouseDown = (e) => {
+  const handlePointerDown = (
+    e
+  ) => {
+    e.preventDefault();
+
     drawingRef.current = true;
 
-    const rect =
-      canvasRef.current.getBoundingClientRect();
+    lastPointRef.current =
+      getPoint(e);
 
-    lastPointRef.current = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    canvasRef.current?.setPointerCapture?.(
+      e.pointerId
+    );
   };
 
-  // ==========================================
-  // MOUSE MOVE
-  // ==========================================
+  // =====================================================
+  // DRAWING
+  // =====================================================
 
-  const handleMouseMove = (e) => {
+  const handlePointerMove = (
+    e
+  ) => {
     if (!drawingRef.current) {
       return;
     }
 
-    const rect =
-      canvasRef.current.getBoundingClientRect();
+    e.preventDefault();
 
-    const currentPoint = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    const currentPoint =
+      getPoint(e);
 
     if (!lastPointRef.current) {
       lastPointRef.current =
@@ -173,22 +259,30 @@ const Whiteboard = ({ meetingId, onClose }) => {
       currentPoint;
   };
 
-  // ==========================================
-  // MOUSE UP
-  // ==========================================
+  // =====================================================
+  // STOP
+  // =====================================================
 
   const stopDrawing = () => {
     drawingRef.current = false;
-
     lastPointRef.current = null;
   };
 
-  // ==========================================
+  // =====================================================
   // RECEIVE DRAW
-  // ==========================================
+  // =====================================================
 
   useEffect(() => {
-    const handleRemoteDraw = (data) => {
+    const handleRemoteDraw = (
+      data
+    ) => {
+      if (
+        data?.meetingId?.toString() !==
+        meetingId?.toString()
+      ) {
+        return;
+      }
+
       drawLine(
         data.from,
         data.to,
@@ -209,11 +303,11 @@ const Whiteboard = ({ meetingId, onClose }) => {
         handleRemoteDraw
       );
     };
-  }, []);
+  }, [meetingId]);
 
-  // ==========================================
-  // CLEAR BOARD
-  // ==========================================
+  // =====================================================
+  // CLEAR
+  // =====================================================
 
   const clearBoard = () => {
     const canvas =
@@ -224,11 +318,14 @@ const Whiteboard = ({ meetingId, onClose }) => {
     const ctx =
       canvas.getContext("2d");
 
+    const rect =
+      canvas.getBoundingClientRect();
+
     ctx.clearRect(
       0,
       0,
-      canvas.width,
-      canvas.height
+      rect.width,
+      rect.height
     );
 
     socket.emit(
@@ -239,12 +336,21 @@ const Whiteboard = ({ meetingId, onClose }) => {
     );
   };
 
-  // ==========================================
+  // =====================================================
   // RECEIVE CLEAR
-  // ==========================================
+  // =====================================================
 
   useEffect(() => {
-    const handleRemoteClear = () => {
+    const handleRemoteClear = (
+      data
+    ) => {
+      if (
+        data?.meetingId?.toString() !==
+        meetingId?.toString()
+      ) {
+        return;
+      }
+
       const canvas =
         canvasRef.current;
 
@@ -253,11 +359,14 @@ const Whiteboard = ({ meetingId, onClose }) => {
       const ctx =
         canvas.getContext("2d");
 
+      const rect =
+        canvas.getBoundingClientRect();
+
       ctx.clearRect(
         0,
         0,
-        canvas.width,
-        canvas.height
+        rect.width,
+        rect.height
       );
     };
 
@@ -272,14 +381,10 @@ const Whiteboard = ({ meetingId, onClose }) => {
         handleRemoteClear
       );
     };
-  }, []);
+  }, [meetingId]);
 
   return (
     <div className="whiteboard-overlay">
-
-      {/* =====================================
-          HEADER
-      ===================================== */}
 
       <div className="whiteboard-header">
 
@@ -301,10 +406,6 @@ const Whiteboard = ({ meetingId, onClose }) => {
 
       </div>
 
-      {/* =====================================
-          TOOLS
-      ===================================== */}
-
       <div className="whiteboard-toolbar">
 
         <label>
@@ -315,7 +416,9 @@ const Whiteboard = ({ meetingId, onClose }) => {
           type="color"
           value={color}
           onChange={(e) =>
-            setColor(e.target.value)
+            setColor(
+              e.target.value
+            )
           }
         />
 
@@ -344,26 +447,33 @@ const Whiteboard = ({ meetingId, onClose }) => {
 
       </div>
 
-      {/* =====================================
-          CANVAS
-      ===================================== */}
-
       <div className="whiteboard-canvas-wrapper">
 
         <canvas
           ref={canvasRef}
-          onMouseDown={
-            handleMouseDown
+          onPointerDown={
+            handlePointerDown
           }
-          onMouseMove={
-            handleMouseMove
+          onPointerMove={
+            handlePointerMove
           }
-          onMouseUp={
+          onPointerUp={
             stopDrawing
           }
-          onMouseLeave={
+          onPointerCancel={
             stopDrawing
           }
+          onPointerLeave={
+            stopDrawing
+          }
+          style={{
+            display: "block",
+            width: "100%",
+            height: "100%",
+            background: "white",
+            touchAction: "none",
+            cursor: "crosshair",
+          }}
         />
 
       </div>
@@ -373,4 +483,3 @@ const Whiteboard = ({ meetingId, onClose }) => {
 };
 
 export default Whiteboard;
-

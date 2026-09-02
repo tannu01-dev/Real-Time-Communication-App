@@ -1,497 +1,821 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-
-import {
-  useNavigate,
-  useParams,
-} from "react-router-dom";
-
+import { useEffect, useRef, useState, useCallback } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import api from "../services/api";
 import socket from "../services/socket";
-
 import Whiteboard from "../components/Whiteboard";
-
 import "../styles/meetingRoom.css";
 
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ],
+};
+
 const MeetingRoom = () => {
-  const { meetingId } =
-    useParams();
+  const { meetingId } = useParams();
+  const navigate = useNavigate();
 
-  const navigate =
-    useNavigate();
+  // ================= USER =================
+  const [user, setUser] = useState(null);
 
-  // ==================================================
-  // USER
-  // ==================================================
+  // ================= MEETING =================
+  const [meeting, setMeeting] = useState(null);
+  const [isHost, setIsHost] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const [user, setUser] =
-    useState(null);
+  // ================= MEDIA =================
+  const localVideoRef = useRef(null);
+  const localStreamRef = useRef(null);
 
-  // ==================================================
-  // MEETING
-  // ==================================================
+  const [cameraOn, setCameraOn] = useState(true);
+  const [micOn, setMicOn] = useState(true);
+  const [screenSharing, setScreenSharing] = useState(false);
 
-  const [meeting, setMeeting] =
-    useState(null);
+  // ================= WEBRTC =================
+  const peerConnectionsRef = useRef({});
+  const pendingCandidatesRef = useRef({});
+  const remoteVideoRefs = useRef({});
 
-  const [isHost, setIsHost] =
-    useState(false);
+  const [remoteStreams, setRemoteStreams] = useState([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  // ================= PARTICIPANTS =================
+  const [participantCount, setParticipantCount] = useState(1);
 
-  // ==================================================
-  // MEDIA
-  // ==================================================
+  // ================= CHAT =================
+  const [chatOpen, setChatOpen] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [message, setMessage] = useState("");
 
-  const localVideoRef =
-    useRef(null);
+  // ================= FILE =================
+  const fileInputRef = useRef(null);
 
-  const localStreamRef =
-    useRef(null);
+  // ================= WHITEBOARD =================
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
 
-  const [cameraOn, setCameraOn] =
-    useState(true);
+  // ================= JOIN REQUEST =================
+  const [joinRequest, setJoinRequest] = useState(null);
+  const joinRequestedRef = useRef(false);
 
-  const [micOn, setMicOn] =
-    useState(true);
+  // =========================================================
+  // USER ID
+  // =========================================================
 
-  const [screenSharing, setScreenSharing] =
-    useState(false);
+  const getUserId = useCallback(() => {
+    return (user?._id || user?.id)?.toString();
+  }, [user]);
 
-  // ==================================================
-  // PARTICIPANTS
-  // ==================================================
-
-  const [participants, setParticipants] =
-    useState([]);
-
-  const [participantCount, setParticipantCount] =
-    useState(1);
-
-  // ==================================================
-  // CHAT
-  // ==================================================
-
-  const [chatOpen, setChatOpen] =
-    useState(false);
-
-  const [messages, setMessages] =
-    useState([]);
-
-  const [message, setMessage] =
-    useState("");
-
-  // ==================================================
-  // FILE
-  // ==================================================
-
-  const fileInputRef =
-    useRef(null);
-
-  // ==================================================
-  // WHITEBOARD
-  // ==================================================
-
-  const [whiteboardOpen, setWhiteboardOpen] =
-    useState(false);
-
-  // ==================================================
-  // JOIN REQUEST
-  // ==================================================
-
-  const [joinRequest, setJoinRequest] =
-    useState(null);
-
-  // ==================================================
+  // =========================================================
   // GET USER
-  // ==================================================
+  // =========================================================
 
   useEffect(() => {
-  const storedUser = localStorage.getItem("user");
-  const token = localStorage.getItem("token");
+    const token = localStorage.getItem("token");
+    const storedUser = localStorage.getItem("user");
 
-  console.log("========== MEETING USER CHECK ==========");
-  console.log("TOKEN EXISTS:", !!token);
-  console.log("STORED USER:", storedUser);
-  console.log("========================================");
-
-  if (!token) {
-    console.log("❌ NO TOKEN -> LOGIN");
-    navigate("/login", { replace: true });
-    return;
-  }
-
-  if (!storedUser) {
-    console.log("❌ NO USER -> LOGIN");
-    navigate("/login", { replace: true });
-    return;
-  }
-
-  try {
-    const parsedUser = JSON.parse(storedUser);
-
-    if (!parsedUser?._id && !parsedUser?.id) {
-      console.log("❌ INVALID USER -> LOGIN");
+    if (!token) {
       navigate("/login", { replace: true });
       return;
     }
 
-    console.log("✅ MEETING USER LOADED:", parsedUser);
+    if (storedUser) {
+      try {
+        const parsed = JSON.parse(storedUser);
+        setUser(parsed);
+      } catch (error) {
+        console.error("USER PARSE ERROR:", error);
+        navigate("/login", { replace: true });
+      }
+    } else {
+      navigate("/login", { replace: true });
+    }
+  }, [navigate]);
 
-    setUser(parsedUser);
-  } catch (error) {
-    console.error("USER PARSE ERROR:", error);
-    navigate("/login", { replace: true });
-  }
-}, [navigate]);
-
-  // ==================================================
+  // =========================================================
   // GET MEETING
-  // ==================================================
+  // =========================================================
+
+  const loadMeeting = useCallback(async () => {
+    if (!meetingId) return null;
+
+    try {
+      const response = await api.get(`/meetings/${meetingId}`);
+
+      if (!response.data?.success) {
+        throw new Error("Meeting not found");
+      }
+
+      const data = response.data.meeting;
+      setMeeting(data);
+
+      return data;
+    } catch (error) {
+      console.error("GET MEETING ERROR:", error.response?.data || error);
+
+      alert(
+        error.response?.data?.message ||
+          "Unable to load meeting"
+      );
+
+      navigate("/dashboard", { replace: true });
+      return null;
+    }
+  }, [meetingId, navigate]);
 
   useEffect(() => {
-    if (!meetingId) {
-      return;
-    }
+    if (!meetingId || !user) return;
 
     let mounted = true;
 
-    const getMeeting =
-      async () => {
-        try {
-          setLoading(true);
+    const load = async () => {
+      setLoading(true);
 
-          const response =
-            await api.get(
-              `/meetings/${meetingId}`
-            );
+      try {
+        const response = await api.get(`/meetings/${meetingId}`);
 
-          console.log(
-            "GET MEETING:",
-            response.data
-          );
-
-          if (
-            !response.data?.success
-          ) {
-            throw new Error(
-              "Meeting not found"
-            );
-          }
-
-          if (mounted) {
-            setMeeting(
-              response.data.meeting
-            );
-          }
-        } catch (error) {
-          console.error(
-            "GET MEETING ERROR:",
-            error.response?.data ||
-              error
-          );
-
-          if (mounted) {
-            alert(
-              error.response?.data
-                ?.message ||
-                "Unable to load meeting"
-            );
-
-            navigate(
-              "/dashboard",
-              {
-                replace: true,
-              }
-            );
-          }
-        } finally {
-          if (mounted) {
-            setLoading(false);
-          }
+        if (!response.data?.success) {
+          throw new Error("Meeting not found");
         }
-      };
 
-    getMeeting();
+        if (mounted) {
+          setMeeting(response.data.meeting);
+        }
+      } catch (error) {
+        console.error(
+          "MEETING LOAD ERROR:",
+          error.response?.data || error
+        );
+
+        if (mounted) {
+          alert(
+            error.response?.data?.message ||
+              "Unable to load meeting"
+          );
+
+          navigate("/dashboard", {
+            replace: true,
+          });
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    load();
 
     return () => {
       mounted = false;
     };
-  }, [
-    meetingId,
-    navigate,
-  ]);
+  }, [meetingId, user, navigate]);
 
-  // ==================================================
-  // CHECK HOST
-  // ==================================================
+  // =========================================================
+  // HOST CHECK
+  // =========================================================
 
   useEffect(() => {
-    if (
-      !user ||
-      !meeting
-    ) {
+    if (!user || !meeting) {
       setIsHost(false);
       return;
     }
 
     const currentUserId = (
-      user._id ||
-      user.id
+      user._id || user.id
     )?.toString();
 
     const hostId = (
-      typeof meeting.host ===
-      "object"
+      typeof meeting.host === "object"
         ? meeting.host?._id
         : meeting.host
     )?.toString();
 
-    const host =
-      Boolean(
-        currentUserId &&
-        hostId &&
-        currentUserId ===
-          hostId
-      );
+    const host = currentUserId === hostId;
 
-    console.log(
-      "========== HOST CHECK =========="
-    );
-
-    console.log(
-      "Current User ID:",
-      currentUserId
-    );
-
-    console.log(
-      "Host ID:",
-      hostId
-    );
-
-    console.log(
-      "IS HOST:",
-      host
-    );
-
-    console.log(
-      "================================"
-    );
+    console.log("========== HOST CHECK ==========");
+    console.log("Current User:", currentUserId);
+    console.log("Meeting Host:", hostId);
+    console.log("IS HOST:", host);
+    console.log("================================");
 
     setIsHost(host);
-  }, [
-    user,
-    meeting,
-  ]);
+  }, [user, meeting]);
 
-  // ==================================================
-  // START MEDIA
-  // ==================================================
+  // =========================================================
+  // START CAMERA + MIC
+  // =========================================================
 
   useEffect(() => {
-    const startMedia =
-      async () => {
-        try {
-          const stream =
-            await navigator.mediaDevices.getUserMedia(
-              {
-                video: true,
-                audio: true,
-              }
-            );
+    let mounted = true;
 
-          localStreamRef.current =
-            stream;
-
-          if (
-            localVideoRef.current
-          ) {
-            localVideoRef.current.srcObject =
-              stream;
-          }
-        } catch (error) {
-          console.error(
-            "MEDIA ERROR:",
-            error
+    const startMedia = async () => {
+      try {
+        if (
+          !navigator.mediaDevices ||
+          !navigator.mediaDevices.getUserMedia
+        ) {
+          throw new Error(
+            "Camera/microphone is not supported."
           );
         }
-      };
+
+        const stream =
+          await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+
+        if (!mounted) {
+          stream.getTracks().forEach((track) =>
+            track.stop()
+          );
+          return;
+        }
+
+        localStreamRef.current = stream;
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+
+          try {
+            await localVideoRef.current.play();
+          } catch (error) {
+            console.log("VIDEO PLAY:", error);
+          }
+        }
+
+        setCameraOn(
+          stream.getVideoTracks().some(
+            (track) => track.enabled
+          )
+        );
+
+        setMicOn(
+          stream.getAudioTracks().some(
+            (track) => track.enabled
+          )
+        );
+
+        console.log("✅ CAMERA + MIC READY");
+      } catch (error) {
+        console.error("❌ MEDIA ERROR:", error);
+
+        alert(
+          "Camera/Microphone access nahi mila. Browser permissions check karo."
+        );
+      }
+    };
 
     startMedia();
 
     return () => {
-      if (
-        localStreamRef.current
-      ) {
+      mounted = false;
+
+      if (localStreamRef.current) {
         localStreamRef.current
           .getTracks()
-          .forEach(
-            (track) =>
-              track.stop()
-          );
+          .forEach((track) => track.stop());
       }
     };
   }, []);
 
-  // ==================================================
-  // ACTUAL ROOM
-  // ==================================================
+  // =========================================================
+  // ADD REMOTE STREAM
+  // =========================================================
+
+  const addRemoteStream = useCallback(
+    (socketId, stream, userName = "Participant") => {
+      setRemoteStreams((prev) => {
+        const exists = prev.some(
+          (item) => item.socketId === socketId
+        );
+
+        if (exists) {
+          return prev.map((item) =>
+            item.socketId === socketId
+              ? {
+                  ...item,
+                  stream,
+                  userName,
+                }
+              : item
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            socketId,
+            stream,
+            userName,
+          },
+        ];
+      });
+    },
+    []
+  );
+
+  // =========================================================
+  // CREATE PEER CONNECTION
+  // =========================================================
+
+  const createPeerConnection = useCallback(
+    (targetSocketId, userName = "Participant") => {
+      if (
+        peerConnectionsRef.current[targetSocketId]
+      ) {
+        return peerConnectionsRef.current[
+          targetSocketId
+        ];
+      }
+
+      const pc = new RTCPeerConnection(
+        ICE_SERVERS
+      );
+
+      peerConnectionsRef.current[
+        targetSocketId
+      ] = pc;
+
+      pendingCandidatesRef.current[
+        targetSocketId
+      ] = [];
+
+      // Add local tracks
+      if (localStreamRef.current) {
+        localStreamRef.current
+          .getTracks()
+          .forEach((track) => {
+            pc.addTrack(
+              track,
+              localStreamRef.current
+            );
+          });
+      }
+
+      // Remote stream
+      pc.ontrack = (event) => {
+        console.log(
+          "📹 REMOTE TRACK:",
+          targetSocketId
+        );
+
+        const stream =
+          event.streams?.[0];
+
+        if (stream) {
+          addRemoteStream(
+            targetSocketId,
+            stream,
+            userName
+          );
+        }
+      };
+
+      // ICE
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit("ice-candidate", {
+            target: targetSocketId,
+            candidate: event.candidate,
+          });
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log(
+          `WEBRTC ${targetSocketId}:`,
+          pc.connectionState
+        );
+
+        if (
+          pc.connectionState === "failed" ||
+          pc.connectionState === "closed" ||
+          pc.connectionState === "disconnected"
+        ) {
+          removePeer(targetSocketId);
+        }
+      };
+
+      return pc;
+    },
+    [addRemoteStream]
+  );
+
+  // =========================================================
+  // REMOVE PEER
+  // =========================================================
+
+  const removePeer = useCallback(
+    (socketId) => {
+      const pc =
+        peerConnectionsRef.current[socketId];
+
+      if (pc) {
+        pc.close();
+        delete peerConnectionsRef.current[
+          socketId
+        ];
+      }
+
+      delete pendingCandidatesRef.current[
+        socketId
+      ];
+
+      setRemoteStreams((prev) =>
+        prev.filter(
+          (item) => item.socketId !== socketId
+        )
+      );
+    },
+    []
+  );
+
+  // =========================================================
+  // CREATE OFFER
+  // =========================================================
+
+  const createOffer = useCallback(
+    async (targetSocketId, userName) => {
+      try {
+        const pc = createPeerConnection(
+          targetSocketId,
+          userName
+        );
+
+        const offer =
+          await pc.createOffer();
+
+        await pc.setLocalDescription(
+          offer
+        );
+
+        socket.emit("offer", {
+          target: targetSocketId,
+          offer,
+        });
+
+        console.log(
+          "📤 OFFER SENT:",
+          targetSocketId
+        );
+      } catch (error) {
+        console.error(
+          "OFFER ERROR:",
+          error
+        );
+      }
+    },
+    [createPeerConnection]
+  );
+
+  // =========================================================
+  // WEBRTC SIGNALING
+  // =========================================================
 
   useEffect(() => {
-    if (
-      !meetingId ||
-      !user ||
-      !meeting
-    ) {
+    const handleOffer = async (data) => {
+      try {
+        if (!data?.sender || !data?.offer) {
+          return;
+        }
+
+        console.log(
+          "📥 OFFER RECEIVED:",
+          data.sender
+        );
+
+        const pc = createPeerConnection(
+          data.sender,
+          data.userName || "Participant"
+        );
+
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(
+            data.offer
+          )
+        );
+
+        const candidates =
+          pendingCandidatesRef.current[
+            data.sender
+          ] || [];
+
+        for (const candidate of candidates) {
+          try {
+            await pc.addIceCandidate(
+              candidate
+            );
+          } catch (error) {
+            console.error(
+              "QUEUED ICE ERROR:",
+              error
+            );
+          }
+        }
+
+        pendingCandidatesRef.current[
+          data.sender
+        ] = [];
+
+        const answer =
+          await pc.createAnswer();
+
+        await pc.setLocalDescription(
+          answer
+        );
+
+        socket.emit("answer", {
+          target: data.sender,
+          answer,
+        });
+
+        console.log(
+          "📤 ANSWER SENT:",
+          data.sender
+        );
+      } catch (error) {
+        console.error(
+          "OFFER HANDLER ERROR:",
+          error
+        );
+      }
+    };
+
+    const handleAnswer = async (data) => {
+      try {
+        if (!data?.sender || !data?.answer) {
+          return;
+        }
+
+        const pc =
+          peerConnectionsRef.current[
+            data.sender
+          ];
+
+        if (!pc) return;
+
+        await pc.setRemoteDescription(
+          new RTCSessionDescription(
+            data.answer
+          )
+        );
+
+        const candidates =
+          pendingCandidatesRef.current[
+            data.sender
+          ] || [];
+
+        for (const candidate of candidates) {
+          try {
+            await pc.addIceCandidate(
+              candidate
+            );
+          } catch (error) {
+            console.error(
+              "ICE QUEUE ERROR:",
+              error
+            );
+          }
+        }
+
+        pendingCandidatesRef.current[
+          data.sender
+        ] = [];
+
+        console.log(
+          "✅ ANSWER APPLIED:",
+          data.sender
+        );
+      } catch (error) {
+        console.error(
+          "ANSWER ERROR:",
+          error
+        );
+      }
+    };
+
+    const handleIceCandidate = async (
+      data
+    ) => {
+      try {
+        if (
+          !data?.sender ||
+          !data?.candidate
+        ) {
+          return;
+        }
+
+        const pc =
+          peerConnectionsRef.current[
+            data.sender
+          ];
+
+        const candidate =
+          new RTCIceCandidate(
+            data.candidate
+          );
+
+        if (
+          pc &&
+          pc.remoteDescription
+        ) {
+          await pc.addIceCandidate(
+            candidate
+          );
+        } else {
+          if (
+            !pendingCandidatesRef.current[
+              data.sender
+            ]
+          ) {
+            pendingCandidatesRef.current[
+              data.sender
+            ] = [];
+          }
+
+          pendingCandidatesRef.current[
+            data.sender
+          ].push(candidate);
+        }
+      } catch (error) {
+        console.error(
+          "ICE ERROR:",
+          error
+        );
+      }
+    };
+
+    const handleUserJoined = (
+      data
+    ) => {
+      console.log(
+        "👤 USER JOINED:",
+        data
+      );
+
+      if (!data?.socketId) return;
+
+      // Existing user creates offer
+      createOffer(
+        data.socketId,
+        data.userName
+      );
+    };
+
+    const handleUserLeft = (
+      data
+    ) => {
+      if (!data?.socketId) return;
+
+      console.log(
+        "👋 USER LEFT:",
+        data.socketId
+      );
+
+      removePeer(data.socketId);
+    };
+
+    socket.on("offer", handleOffer);
+    socket.on("answer", handleAnswer);
+    socket.on(
+      "ice-candidate",
+      handleIceCandidate
+    );
+    socket.on(
+      "user-joined",
+      handleUserJoined
+    );
+    socket.on(
+      "user-left",
+      handleUserLeft
+    );
+
+    return () => {
+      socket.off("offer", handleOffer);
+      socket.off("answer", handleAnswer);
+      socket.off(
+        "ice-candidate",
+        handleIceCandidate
+      );
+      socket.off(
+        "user-joined",
+        handleUserJoined
+      );
+      socket.off(
+        "user-left",
+        handleUserLeft
+      );
+    };
+  }, [createOffer, createPeerConnection, removePeer]);
+
+  // =========================================================
+  // JOIN ACTUAL ROOM
+  // =========================================================
+
+  useEffect(() => {
+    if (!meetingId || !user || !meeting) {
       return;
     }
 
     const currentUserId = (
-      user._id ||
-      user.id
+      user._id || user.id
     )?.toString();
 
     const hostId = (
-      typeof meeting.host ===
-      "object"
+      typeof meeting.host === "object"
         ? meeting.host?._id
         : meeting.host
     )?.toString();
 
     const userIsHost =
-      currentUserId ===
-      hostId;
+      currentUserId === hostId;
 
     const isParticipant =
       meeting.participants?.some(
         (participant) => {
-          const participantId =
-            (
-              participant?._id ||
-              participant
-            )?.toString();
+          const id = (
+            participant?._id ||
+            participant
+          )?.toString();
 
-          return (
-            participantId ===
-            currentUserId
-          );
+          return id === currentUserId;
         }
       );
 
-    console.log(
-      "ACTUAL ROOM CHECK:",
-      {
-        userIsHost,
-        isParticipant,
-      }
-    );
+    // ---------------------------------------------------------
+    // NOT ADMITTED
+    // ---------------------------------------------------------
 
-    if (
-      !userIsHost &&
-      !isParticipant
-    ) {
-      console.log(
-        "❌ USER IS NOT ADMITTED"
-      );
+    if (!userIsHost && !isParticipant) {
+      if (!joinRequestedRef.current) {
+        joinRequestedRef.current = true;
+
+        api
+          .post("/meetings/join", {
+            meetingId,
+          })
+          .then((response) => {
+            console.log(
+              "JOIN RESPONSE:",
+              response.data
+            );
+          })
+          .catch((error) => {
+            console.error(
+              "JOIN REQUEST ERROR:",
+              error.response?.data ||
+                error
+            );
+
+            joinRequestedRef.current = false;
+          });
+      }
 
       return;
     }
 
-    // =================================================
-    // SOCKET CONNECT
-    // =================================================
+    // ---------------------------------------------------------
+    // CONNECT SOCKET
+    // ---------------------------------------------------------
+
+    const joinRoom = () => {
+      if (!socket.connected) return;
+
+      socket.emit("join-room", {
+        meetingId,
+        userId: currentUserId,
+        userName:
+          user.name || "User",
+      });
+
+      console.log(
+        "🚪 JOINED ACTUAL ROOM:",
+        meetingId
+      );
+    };
 
     if (!socket.connected) {
       socket.connect();
-    }
-
-    const joinActualRoom =
-      () => {
-        if (!socket.connected) {
-          return;
-        }
-
-        console.log(
-          "================================="
-        );
-
-        console.log(
-          "🚪 JOINING ACTUAL MEETING ROOM"
-        );
-
-        console.log(
-          "Meeting ID:",
-          meetingId
-        );
-
-        console.log(
-          "User ID:",
-          currentUserId
-        );
-
-        console.log(
-          "Socket ID:",
-          socket.id
-        );
-
-        console.log(
-          "================================="
-        );
-
-        socket.emit(
-          "join-room",
-          {
-            meetingId,
-            userId:
-              currentUserId,
-            userName:
-              user.name ||
-              "User",
-          }
-        );
-      };
-
-    if (socket.connected) {
-      joinActualRoom();
-    } else {
       socket.once(
         "connect",
-        joinActualRoom
+        joinRoom
       );
+    } else {
+      joinRoom();
     }
 
     return () => {
       socket.off(
         "connect",
-        joinActualRoom
+        joinRoom
       );
-
-      if (
-        socket.connected
-      ) {
-        socket.emit(
-          "leave-room",
-          {
-            meetingId,
-            userId:
-              currentUserId,
-          }
-        );
-      }
     };
-  }, [
-    meetingId,
-    user,
-    meeting,
-  ]);
+  }, [meetingId, user, meeting]);
 
-  // ==================================================
-  // HOST SOCKET
-  // ==================================================
+  // =========================================================
+  // HOST SOCKET + JOIN REQUEST
+  // =========================================================
 
   useEffect(() => {
     if (
@@ -503,156 +827,77 @@ const MeetingRoom = () => {
     }
 
     const hostUserId = (
-      user._id ||
-      user.id
+      user._id || user.id
     )?.toString();
 
-    const hostUserName =
-      user.name ||
-      "Host";
+    const registerHost = () => {
+      if (!socket.connected) return;
 
-    console.log(
-      "================================="
-    );
+      console.log(
+        "👑 REGISTERING HOST:",
+        hostUserId
+      );
 
-    console.log(
-      "👑 HOST SOCKET ACTIVE"
-    );
+      socket.emit("register-user", {
+        userId: hostUserId,
+        userName:
+          user.name || "Host",
+      });
 
-    console.log(
-      "Meeting ID:",
-      meetingId
-    );
+      socket.emit("host-join-room", {
+        meetingId,
+        userId: hostUserId,
+        userName:
+          user.name || "Host",
+      });
+    };
 
-    console.log(
-      "Host ID:",
-      hostUserId
-    );
+    const handleJoinRequest = (
+      data
+    ) => {
+      console.log(
+        "🔔 JOIN REQUEST:",
+        data
+      );
 
-    console.log(
-      "Host Name:",
-      hostUserName
-    );
+      if (
+        data?.meetingId?.toString() !==
+        meetingId?.toString()
+      ) {
+        return;
+      }
 
-    console.log(
-      "================================="
-    );
-
-    // =================================================
-    // HOST CONNECT
-    // =================================================
-
-    const registerHost =
-      () => {
-        if (!socket.connected) {
-          return;
-        }
-
-        console.log(
-          "👑 REGISTERING HOST SOCKET:",
-          socket.id
-        );
-
-        // Register host
-        socket.emit(
-          "register-user",
-          {
-            userId:
-              hostUserId,
-            userName:
-              hostUserName,
-          }
-        );
-
-        // Join host room
-        socket.emit(
-          "host-join-room",
-          {
-            meetingId,
-            userId:
-              hostUserId,
-            userName:
-              hostUserName,
-          }
-        );
-      };
-
-    // =================================================
-    // JOIN REQUEST
-    // =================================================
-
-    const handleJoinRequest =
-      (data) => {
-        console.log(
-          "================================="
-        );
-
-        console.log(
-          "🔔 HOST RECEIVED JOIN REQUEST"
-        );
-
-        console.log(
-          data
-        );
-
-        console.log(
-          "================================="
-        );
-
-        if (
-          data?.meetingId?.toString() !==
-          meetingId?.toString()
-        ) {
-          console.log(
-            "❌ WRONG MEETING REQUEST"
-          );
-
-          return;
-        }
-
-        setJoinRequest({
-          meetingId:
-            data.meetingId,
-
-          userId:
-            data.userId,
-
-          name:
-            data.userName ||
-            data.name ||
-            "Someone",
-
-          email:
-            data.userEmail ||
-            data.email ||
-            "",
-
-          socketId:
-            data.socketId ||
-            "",
-        });
-      };
+      setJoinRequest({
+        meetingId:
+          data.meetingId,
+        userId:
+          data.userId,
+        name:
+          data.userName ||
+          data.name ||
+          "Someone",
+        email:
+          data.userEmail ||
+          data.email ||
+          "",
+        socketId:
+          data.socketId || "",
+      });
+    };
 
     socket.on(
       "join-request",
       handleJoinRequest
     );
 
-    // =================================================
-    // CONNECT
-    // =================================================
-
-    if (
-      socket.connected
-    ) {
-      registerHost();
-    } else {
+    if (!socket.connected) {
       socket.connect();
-
       socket.once(
         "connect",
         registerHost
       );
+    } else {
+      registerHost();
     }
 
     return () => {
@@ -672,17 +917,113 @@ const MeetingRoom = () => {
     user,
   ]);
 
-  // ==================================================
-  // PARTICIPANT COUNT
-  // ==================================================
+  // =========================================================
+  // PARTICIPANT ADMITTED
+  // =========================================================
 
   useEffect(() => {
-    const handleCount =
-      (data) => {
-        setParticipantCount(
-          data?.count || 0
-        );
-      };
+    const handleAdmitted = async (
+      data
+    ) => {
+      if (
+        data?.meetingId?.toString() !==
+        meetingId?.toString()
+      ) {
+        return;
+      }
+
+      const myId = (
+        user?._id || user?.id
+      )?.toString();
+
+      if (
+        data?.userId?.toString() !==
+        myId
+      ) {
+        return;
+      }
+
+      console.log(
+        "🎉 YOU ARE ADMITTED"
+      );
+
+      joinRequestedRef.current = false;
+
+      const updatedMeeting =
+        await loadMeeting();
+
+      if (updatedMeeting) {
+        setMeeting(updatedMeeting);
+      }
+    };
+
+    const handleDenied = (data) => {
+      if (
+        data?.meetingId?.toString() !==
+        meetingId?.toString()
+      ) {
+        return;
+      }
+
+      const myId = (
+        user?._id || user?.id
+      )?.toString();
+
+      if (
+        data?.userId?.toString() !==
+        myId
+      ) {
+        return;
+      }
+
+      alert(
+        data.message ||
+          "Host denied your request."
+      );
+
+      navigate("/dashboard", {
+        replace: true,
+      });
+    };
+
+    socket.on(
+      "participant-admitted",
+      handleAdmitted
+    );
+
+    socket.on(
+      "participant-denied",
+      handleDenied
+    );
+
+    return () => {
+      socket.off(
+        "participant-admitted",
+        handleAdmitted
+      );
+
+      socket.off(
+        "participant-denied",
+        handleDenied
+      );
+    };
+  }, [
+    meetingId,
+    user,
+    loadMeeting,
+    navigate,
+  ]);
+
+  // =========================================================
+  // PARTICIPANT COUNT
+  // =========================================================
+
+  useEffect(() => {
+    const handleCount = (data) => {
+      setParticipantCount(
+        data?.count || 0
+      );
+    };
 
     socket.on(
       "participant-count",
@@ -697,99 +1038,22 @@ const MeetingRoom = () => {
     };
   }, []);
 
-  // ==================================================
-  // USER JOINED
-  // ==================================================
+  // =========================================================
+  // CHAT
+  // =========================================================
 
   useEffect(() => {
-    const handleUserJoined =
-      (data) => {
-        console.log(
-          "USER JOINED:",
-          data
-        );
-
-        setParticipants(
-          (prev) => {
-            const exists =
-              prev.some(
-                (item) =>
-                  item.socketId ===
-                  data.socketId
-              );
-
-            if (exists) {
-              return prev;
-            }
-
-            return [
-              ...prev,
-              data,
-            ];
-          }
-        );
-      };
-
-    socket.on(
-      "user-joined",
-      handleUserJoined
-    );
-
-    return () => {
-      socket.off(
-        "user-joined",
-        handleUserJoined
-      );
+    const receiveMessage = (
+      data
+    ) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          ...data,
+          type: "message",
+        },
+      ]);
     };
-  }, []);
-
-  // ==================================================
-  // USER LEFT
-  // ==================================================
-
-  useEffect(() => {
-    const handleUserLeft =
-      (data) => {
-        setParticipants(
-          (prev) =>
-            prev.filter(
-              (item) =>
-                item.socketId !==
-                data.socketId
-            )
-        );
-      };
-
-    socket.on(
-      "user-left",
-      handleUserLeft
-    );
-
-    return () => {
-      socket.off(
-        "user-left",
-        handleUserLeft
-      );
-    };
-  }, []);
-
-  // ==================================================
-  // CHAT RECEIVE
-  // ==================================================
-
-  useEffect(() => {
-    const receiveMessage =
-      (data) => {
-        setMessages(
-          (prev) => [
-            ...prev,
-            {
-              ...data,
-              type: "message",
-            },
-          ]
-        );
-      };
 
     socket.on(
       "receive-message",
@@ -804,26 +1068,40 @@ const MeetingRoom = () => {
     };
   }, []);
 
-  // ==================================================
-  // FILE RECEIVE
-  // ==================================================
+  const sendMessage = (e) => {
+    e.preventDefault();
+
+    if (!message.trim()) return;
+
+    socket.emit("send-message", {
+      meetingId,
+      userId:
+        user?._id || user?.id,
+      userName:
+        user?.name || "User",
+      message: message.trim(),
+    });
+
+    setMessage("");
+  };
+
+  // =========================================================
+  // FILE
+  // =========================================================
 
   useEffect(() => {
-    const receiveFile =
-      (data) => {
-        setMessages(
-          (prev) => [
-            ...prev,
-            {
-              ...data,
-              type: "file",
-              time:
-                data.time ||
-                new Date().toISOString(),
-            },
-          ]
-        );
-      };
+    const receiveFile = (data) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          ...data,
+          type: "file",
+          time:
+            data.time ||
+            new Date().toISOString(),
+        },
+      ]);
+    };
 
     socket.on(
       "receive-file",
@@ -838,72 +1116,131 @@ const MeetingRoom = () => {
     };
   }, []);
 
-  // ==================================================
+  const uploadFile = async (file) => {
+    try {
+      const formData = new FormData();
+
+      formData.append(
+        "file",
+        file
+      );
+
+      formData.append(
+        "meetingId",
+        meetingId
+      );
+
+      const response =
+        await api.post(
+          "/files/upload",
+          formData,
+          {
+            headers: {
+              "Content-Type":
+                "multipart/form-data",
+            },
+          }
+        );
+
+      if (response.data?.success) {
+        const fileData =
+          response.data.file;
+
+        socket.emit(
+          "send-file",
+          {
+            meetingId,
+            userId:
+              user?._id ||
+              user?.id,
+            userName:
+              user?.name || "User",
+            fileName:
+              fileData.originalName,
+            fileUrl:
+              fileData.url,
+            size:
+              fileData.size,
+          }
+        );
+      }
+    } catch (error) {
+      console.error(
+        "FILE UPLOAD ERROR:",
+        error
+      );
+
+      alert(
+        error.response?.data
+          ?.message ||
+          "File upload failed"
+      );
+    }
+  };
+
+  const handleFileSelect = async (
+    e
+  ) => {
+    const file =
+      e.target.files?.[0];
+
+    if (!file) return;
+
+    await uploadFile(file);
+
+    e.target.value = "";
+  };
+
+  // =========================================================
   // MIC
-  // ==================================================
+  // =========================================================
 
-  const toggleMic =
-    () => {
-      const stream =
-        localStreamRef.current;
+  const toggleMic = () => {
+    const stream =
+      localStreamRef.current;
 
-      if (!stream) {
-        return;
-      }
+    if (!stream) return;
 
-      const audioTrack =
-        stream.getAudioTracks()[0];
+    const track =
+      stream.getAudioTracks()[0];
 
-      if (!audioTrack) {
-        return;
-      }
+    if (!track) return;
 
-      audioTrack.enabled =
-        !audioTrack.enabled;
+    track.enabled =
+      !track.enabled;
 
-      setMicOn(
-        audioTrack.enabled
-      );
-    };
+    setMicOn(track.enabled);
+  };
 
-  // ==================================================
+  // =========================================================
   // CAMERA
-  // ==================================================
+  // =========================================================
 
-  const toggleCamera =
-    () => {
-      const stream =
-        localStreamRef.current;
+  const toggleCamera = () => {
+    const stream =
+      localStreamRef.current;
 
-      if (!stream) {
-        return;
-      }
+    if (!stream) return;
 
-      const videoTrack =
-        stream.getVideoTracks()[0];
+    const track =
+      stream.getVideoTracks()[0];
 
-      if (!videoTrack) {
-        return;
-      }
+    if (!track) return;
 
-      videoTrack.enabled =
-        !videoTrack.enabled;
+    track.enabled =
+      !track.enabled;
 
-      setCameraOn(
-        videoTrack.enabled
-      );
-    };
+    setCameraOn(track.enabled);
+  };
 
-  // ==================================================
+  // =========================================================
   // SCREEN SHARE
-  // ==================================================
+  // =========================================================
 
   const toggleScreenShare =
     async () => {
       try {
-        if (
-          screenSharing
-        ) {
+        if (screenSharing) {
           const cameraStream =
             await navigator.mediaDevices.getUserMedia(
               {
@@ -912,27 +1249,33 @@ const MeetingRoom = () => {
               }
             );
 
+          await replaceVideoTrack(
+            cameraStream.getVideoTracks()[0]
+          );
+
+          if (localStreamRef.current) {
+            localStreamRef.current
+              .getTracks()
+              .forEach((track) => {
+                if (
+                  track.kind === "video"
+                ) {
+                  track.stop();
+                }
+              });
+          }
+
           localStreamRef.current =
             cameraStream;
 
-          if (
-            localVideoRef.current
-          ) {
+          if (localVideoRef.current) {
             localVideoRef.current.srcObject =
               cameraStream;
           }
 
-          setScreenSharing(
-            false
-          );
-
-          setCameraOn(
-            true
-          );
-
-          setMicOn(
-            true
-          );
+          setScreenSharing(false);
+          setCameraOn(true);
+          setMicOn(true);
 
           return;
         }
@@ -941,58 +1284,53 @@ const MeetingRoom = () => {
           await navigator.mediaDevices.getDisplayMedia(
             {
               video: true,
-              audio: true,
+              audio: false,
             }
           );
-
-        localStreamRef.current =
-          screenStream;
-
-        if (
-          localVideoRef.current
-        ) {
-          localVideoRef.current.srcObject =
-            screenStream;
-        }
-
-        setScreenSharing(
-          true
-        );
 
         const screenTrack =
           screenStream.getVideoTracks()[0];
 
-        screenTrack.onended =
-          async () => {
-            try {
-              const cameraStream =
-                await navigator.mediaDevices.getUserMedia(
-                  {
-                    video: true,
-                    audio: true,
-                  }
-                );
+        await replaceVideoTrack(
+          screenTrack
+        );
 
-              localStreamRef.current =
-                cameraStream;
+        const oldVideo =
+          localStreamRef.current?.getVideoTracks()[0];
 
-              if (
-                localVideoRef.current
-              ) {
-                localVideoRef.current.srcObject =
-                  cameraStream;
-              }
+        if (oldVideo) {
+          oldVideo.stop();
+        }
 
-              setScreenSharing(
-                false
-              );
-            } catch (error) {
-              console.error(
-                "CAMERA RESTORE ERROR:",
-                error
-              );
-            }
-          };
+        const audioTrack =
+          localStreamRef.current?.getAudioTracks()[0];
+
+        const combined =
+          new MediaStream();
+
+        combined.addTrack(
+          screenTrack
+        );
+
+        if (audioTrack) {
+          combined.addTrack(
+            audioTrack
+          );
+        }
+
+        localStreamRef.current =
+          combined;
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject =
+            combined;
+        }
+
+        setScreenSharing(true);
+
+        screenTrack.onended = () => {
+          toggleScreenShare();
+        };
       } catch (error) {
         console.error(
           "SCREEN SHARE ERROR:",
@@ -1001,514 +1339,389 @@ const MeetingRoom = () => {
       }
     };
 
-  // ==================================================
-  // SEND MESSAGE
-  // ==================================================
-
-  const sendMessage =
-    (e) => {
-      e.preventDefault();
-
-      if (
-        !message.trim()
-      ) {
-        return;
-      }
-
-      socket.emit(
-        "send-message",
-        {
-          meetingId,
-
-          userId:
-            user?._id ||
-            user?.id,
-
-          userName:
-            user?.name ||
-            "User",
-
-          message:
-            message.trim(),
-        }
+  const replaceVideoTrack = async (
+    newTrack
+  ) => {
+    const peers =
+      Object.values(
+        peerConnectionsRef.current
       );
 
-      setMessage("");
-    };
-
-  // ==================================================
-  // FILE SELECT
-  // ==================================================
-
-  const handleFileSelect =
-    async (e) => {
-      const file =
-        e.target.files?.[0];
-
-      if (!file) {
-        return;
-      }
-
-      await uploadFile(
-        file
-      );
-
-      e.target.value = "";
-    };
-
-  // ==================================================
-  // UPLOAD FILE
-  // ==================================================
-
-  const uploadFile =
-    async (file) => {
-      try {
-        const formData =
-          new FormData();
-
-        formData.append(
-          "file",
-          file
-        );
-
-        formData.append(
-          "meetingId",
-          meetingId
-        );
-
-        const response =
-          await api.post(
-            "/files/upload",
-            formData,
-            {
-              headers: {
-                "Content-Type":
-                  "multipart/form-data",
-              },
-            }
+    for (const pc of peers) {
+      const sender =
+        pc
+          .getSenders()
+          .find(
+            (s) =>
+              s.track?.kind ===
+              "video"
           );
 
-        if (
-          response.data?.success
-        ) {
-          const fileData =
-            response.data.file;
-
-          socket.emit(
-            "send-file",
-            {
-              meetingId,
-
-              userId:
-                user?._id ||
-                user?.id,
-
-              userName:
-                user?.name ||
-                "User",
-
-              fileName:
-                fileData.originalName,
-
-              fileUrl:
-                fileData.url,
-
-              size:
-                fileData.size,
-            }
-          );
-        }
-      } catch (error) {
-        console.error(
-          "FILE UPLOAD ERROR:",
-          error
-        );
-
-        alert(
-          error.response?.data
-            ?.message ||
-            "File upload failed"
+      if (sender) {
+        await sender.replaceTrack(
+          newTrack
         );
       }
-    };
+    }
+  };
 
-  // ==================================================
+  // =========================================================
   // ADMIT
-  // ==================================================
+  // =========================================================
 
-  const admitUser =
-    async () => {
-      if (!joinRequest) {
-        return;
-      }
+  const admitUser = async () => {
+    if (!joinRequest) return;
 
-      try {
-        console.log(
-          "👑 ADMITTING:",
-          joinRequest
-        );
+    try {
+      console.log(
+        "👑 ADMITTING:",
+        joinRequest
+      );
 
-        const response =
-          await api.post(
-            `/meetings/${meetingId}/admit`,
-            {
-              userId:
-                joinRequest.userId,
-            }
-          );
-
-        console.log(
-          "ADMIT RESPONSE:",
-          response.data
-        );
-
-        if (
-          response.data?.success
-        ) {
-          socket.emit(
-            "participant-admitted",
-            {
-              meetingId,
-
-              userId:
-                joinRequest.userId,
-
-              socketId:
-                joinRequest.socketId,
-
-              userName:
-                joinRequest.name,
-            }
-          );
-
-          setJoinRequest(
-            null
-          );
-
-          // Refresh meeting
-          const meetingResponse =
-            await api.get(
-              `/meetings/${meetingId}`
-            );
-
-          if (
-            meetingResponse.data
-              ?.success
-          ) {
-            setMeeting(
-              meetingResponse.data.meeting
-            );
+      const response =
+        await api.post(
+          `/meetings/${meetingId}/admit`,
+          {
+            userId:
+              joinRequest.userId,
           }
-        }
-      } catch (error) {
-        console.error(
-          "ADMIT ERROR:",
-          error.response?.data ||
-            error
         );
 
-        alert(
-          error.response?.data
-            ?.message ||
-            "Unable to admit user"
-        );
-      }
-    };
+      console.log(
+        "ADMIT RESPONSE:",
+        response.data
+      );
 
-  // ==================================================
-  // DENY
-  // ==================================================
-
-  const denyUser =
-    async () => {
-      if (!joinRequest) {
-        return;
-      }
-
-      try {
-        console.log(
-          "❌ DENYING:",
-          joinRequest
-        );
-
-        const response =
-          await api.post(
-            `/meetings/${meetingId}/deny`,
-            {
-              userId:
-                joinRequest.userId,
-            }
-          );
-
-        console.log(
-          "DENY RESPONSE:",
-          response.data
-        );
-
-        if (
-          response.data?.success
-        ) {
-          socket.emit(
-            "participant-denied",
-            {
-              meetingId,
-
-              userId:
-                joinRequest.userId,
-
-              socketId:
-                joinRequest.socketId,
-            }
-          );
-
-          setJoinRequest(
-            null
-          );
-        }
-      } catch (error) {
-        console.error(
-          "DENY ERROR:",
-          error.response?.data ||
-            error
-        );
-
-        alert(
-          error.response?.data
-            ?.message ||
-            "Unable to deny user"
-        );
-      }
-    };
-
-  // ==================================================
-  // END MEETING
-  // ==================================================
-
-  const endMeeting =
-    async () => {
-      const confirmed =
-        window.confirm(
-          "Are you sure you want to end this meeting?"
-        );
-
-      if (!confirmed) {
-        return;
-      }
-
-      try {
-        await api.patch(
-          `/meetings/${meetingId}/end`
-        );
-
+      if (response.data?.success) {
         socket.emit(
-          "meeting-ended",
+          "participant-admitted",
           {
             meetingId,
+            userId:
+              joinRequest.userId,
+            socketId:
+              joinRequest.socketId,
+            userName:
+              joinRequest.name,
           }
         );
 
-        if (
-          localStreamRef.current
-        ) {
-          localStreamRef.current
-            .getTracks()
-            .forEach(
-              (track) =>
-                track.stop()
-            );
-        }
+        setJoinRequest(null);
 
-        navigate(
-          "/dashboard",
-          {
-            replace: true,
-          }
-        );
-      } catch (error) {
-        console.error(
-          "END MEETING ERROR:",
-          error
-        );
-
-        alert(
-          error.response?.data
-            ?.message ||
-            "Unable to end meeting"
-        );
+        await loadMeeting();
       }
-    };
+    } catch (error) {
+      console.error(
+        "ADMIT ERROR:",
+        error.response?.data ||
+          error
+      );
 
-  // ==================================================
-  // LEAVE
-  // ==================================================
+      alert(
+        error.response?.data
+          ?.message ||
+          "Unable to admit user"
+      );
+    }
+  };
 
-  const leaveMeeting =
-    () => {
+  // =========================================================
+  // DENY
+  // =========================================================
+
+  const denyUser = async () => {
+    if (!joinRequest) return;
+
+    try {
+      const response =
+        await api.post(
+          `/meetings/${meetingId}/deny`,
+          {
+            userId:
+              joinRequest.userId,
+          }
+        );
+
+      if (response.data?.success) {
+        socket.emit(
+          "participant-denied",
+          {
+            meetingId,
+            userId:
+              joinRequest.userId,
+            socketId:
+              joinRequest.socketId,
+          }
+        );
+
+        setJoinRequest(null);
+      }
+    } catch (error) {
+      console.error(
+        "DENY ERROR:",
+        error.response?.data ||
+          error
+      );
+
+      alert(
+        error.response?.data
+          ?.message ||
+          "Unable to deny user"
+      );
+    }
+  };
+
+  // =========================================================
+  // END MEETING
+  // =========================================================
+
+  const endMeeting = async () => {
+    const confirmed =
+      window.confirm(
+        "Are you sure you want to end this meeting?"
+      );
+
+    if (!confirmed) return;
+
+    try {
+      await api.patch(
+        `/meetings/${meetingId}/end`
+      );
+
       socket.emit(
-        "leave-room",
+        "meeting-ended",
         {
           meetingId,
-
-          userId:
-            user?._id ||
-            user?.id,
         }
       );
 
-      if (
-        localStreamRef.current
-      ) {
-        localStreamRef.current
-          .getTracks()
-          .forEach(
-            (track) =>
-              track.stop()
-          );
-      }
+      cleanup();
 
-      navigate(
-        "/dashboard",
-        {
-          replace: true,
-        }
+      navigate("/dashboard", {
+        replace: true,
+      });
+    } catch (error) {
+      console.error(
+        "END MEETING ERROR:",
+        error
       );
+
+      alert(
+        error.response?.data
+          ?.message ||
+          "Unable to end meeting"
+      );
+    }
+  };
+
+  // =========================================================
+  // CLEANUP
+  // =========================================================
+
+  const cleanup = () => {
+    if (socket.connected) {
+      socket.emit("leave-room", {
+        meetingId,
+        userId:
+          user?._id || user?.id,
+      });
+    }
+
+    Object.values(
+      peerConnectionsRef.current
+    ).forEach((pc) => {
+      try {
+        pc.close();
+      } catch {}
+    });
+
+    peerConnectionsRef.current = {};
+
+    if (localStreamRef.current) {
+      localStreamRef.current
+        .getTracks()
+        .forEach((track) =>
+          track.stop()
+        );
+    }
+  };
+
+  const leaveMeeting = () => {
+    cleanup();
+
+    navigate("/dashboard", {
+      replace: true,
+    });
+  };
+
+  // =========================================================
+  // MEETING ENDED
+  // =========================================================
+
+  useEffect(() => {
+    const handleMeetingEnded = (
+      data
+    ) => {
+      alert(
+        data?.message ||
+          "The host ended the meeting."
+      );
+
+      cleanup();
+
+      navigate("/dashboard", {
+        replace: true,
+      });
     };
 
-  // ==================================================
-  // LOADING
-  // ==================================================
+    socket.on(
+      "meeting-ended",
+      handleMeetingEnded
+    );
 
-  if (
-    loading ||
-    !meeting
-  ) {
+    return () => {
+      socket.off(
+        "meeting-ended",
+        handleMeetingEnded
+      );
+    };
+  }, [meetingId]);
+
+  // =========================================================
+  // REMOTE VIDEO ATTACH
+  // =========================================================
+
+  useEffect(() => {
+    remoteStreams.forEach(
+      (item) => {
+        const video =
+          remoteVideoRefs.current[
+            item.socketId
+          ];
+
+        if (
+          video &&
+          video.srcObject !==
+            item.stream
+        ) {
+          video.srcObject =
+            item.stream;
+
+          video
+            .play()
+            .catch(() => {});
+        }
+      }
+    );
+  }, [remoteStreams]);
+
+  // =========================================================
+  // LOADING
+  // =========================================================
+
+  if (loading || !meeting) {
     return (
       <div className="meeting-loading">
-
         <div className="meeting-loader"></div>
-
-        <p>
-          Loading meeting...
-        </p>
-
+        <p>Loading meeting...</p>
       </div>
     );
   }
 
-  // ==================================================
+  // =========================================================
   // UI
-  // ==================================================
+  // =========================================================
 
   return (
     <div className="meeting-page">
 
       {/* HEADER */}
-
       <header className="meeting-header">
 
         <div className="meeting-title">
-
           <div className="meeting-logo">
             VC
           </div>
 
           <div>
-            <h2>
-              Meeting Room
-            </h2>
+            <h2>Meeting Room</h2>
 
             <span>
               {meetingId}
             </span>
           </div>
-
         </div>
 
         <div className="meeting-header-right">
-
           <div className="participant-count">
-            👥{" "}
-            {participantCount}
+            👥 {participantCount}
           </div>
-
         </div>
 
       </header>
 
       {/* JOIN REQUEST */}
+      {isHost && joinRequest && (
+        <div className="join-request-popup">
 
-      {isHost &&
-        joinRequest && (
-          <div className="join-request-popup">
+          <div className="join-popup-icon">
+            👋
+          </div>
 
-            <div className="join-popup-icon">
-              👋
-            </div>
+          <div className="join-popup-content">
 
-            <div className="join-popup-content">
+            <h3>
+              Someone wants to join
+            </h3>
 
-              <h3>
-                Someone wants to join
-              </h3>
+            <p>
+              <strong>
+                {joinRequest.name ||
+                  "Someone"}
+              </strong>{" "}
+              wants to join this
+              meeting.
+            </p>
 
-              <p>
-                <strong>
-                  {
-                    joinRequest.name ||
-                    "Someone"
-                  }
-                </strong>{" "}
-                wants to join this
-                meeting.
-              </p>
+            {joinRequest.email && (
+              <small>
+                {joinRequest.email}
+              </small>
+            )}
 
-              {joinRequest.email && (
-                <small>
-                  {
-                    joinRequest.email
-                  }
-                </small>
-              )}
+            <div className="join-popup-actions">
 
-              <div className="join-popup-actions">
+              <button
+                className="popup-deny-btn"
+                onClick={denyUser}
+              >
+                Deny
+              </button>
 
-                <button
-                  className="popup-deny-btn"
-                  onClick={
-                    denyUser
-                  }
-                >
-                  Deny
-                </button>
-
-                <button
-                  className="popup-admit-btn"
-                  onClick={
-                    admitUser
-                  }
-                >
-                  Admit
-                </button>
-
-              </div>
+              <button
+                className="popup-admit-btn"
+                onClick={admitUser}
+              >
+                Admit
+              </button>
 
             </div>
 
           </div>
-        )}
+
+        </div>
+      )}
 
       {/* VIDEO */}
-
       <main className="meeting-main">
 
         <div className="video-grid">
 
+          {/* LOCAL */}
           <div className="video-card local-video-card">
 
             <video
-              ref={
-                localVideoRef
-              }
+              ref={localVideoRef}
               autoPlay
               muted
               playsInline
@@ -1521,14 +1734,14 @@ const MeetingRoom = () => {
             )}
 
             <div className="video-name">
-              {user?.name ||
-                "You"}{" "}
+              {user?.name || "You"}{" "}
               (You)
             </div>
 
           </div>
 
-          {participants.map(
+          {/* REMOTE */}
+          {remoteStreams.map(
             (participant) => (
               <div
                 className="video-card"
@@ -1537,15 +1750,21 @@ const MeetingRoom = () => {
                 }
               >
 
-                <div className="remote-placeholder">
-                  👤
-                </div>
+                <video
+                  ref={(element) => {
+                    if (element) {
+                      remoteVideoRefs.current[
+                        participant.socketId
+                      ] = element;
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                />
 
                 <div className="video-name">
-                  {
-                    participant.userName ||
-                    "Participant"
-                  }
+                  {participant.userName ||
+                    "Participant"}
                 </div>
 
               </div>
@@ -1557,19 +1776,15 @@ const MeetingRoom = () => {
       </main>
 
       {/* CHAT */}
-
       <aside
         className={`chat-drawer ${
-          chatOpen
-            ? "open"
-            : ""
+          chatOpen ? "open" : ""
         }`}
       >
 
         <div className="chat-header">
 
           <div>
-
             <h3>
               In-call messages
             </h3>
@@ -1578,14 +1793,11 @@ const MeetingRoom = () => {
               Everyone can see these
               messages
             </span>
-
           </div>
 
           <button
             onClick={() =>
-              setChatOpen(
-                false
-              )
+              setChatOpen(false)
             }
           >
             ✕
@@ -1595,27 +1807,21 @@ const MeetingRoom = () => {
 
         <div className="chat-messages">
 
-          {messages.length ===
-          0 ? (
+          {messages.length === 0 ? (
             <div className="empty-chat">
-
-              <div>
-                💬
-              </div>
-
+              <div>💬</div>
               <p>
                 No messages yet
               </p>
-
               <span>
                 Send a message to
                 everyone
               </span>
-
             </div>
           ) : (
             messages.map(
               (msg, index) => {
+
                 const ownMessage =
                   msg.userId
                     ?.toString() ===
@@ -1635,10 +1841,8 @@ const MeetingRoom = () => {
                   >
 
                     <div className="chat-user">
-                      {
-                        msg.userName ||
-                        "User"
-                      }
+                      {msg.userName ||
+                        "User"}
                     </div>
 
                     {msg.type ===
@@ -1650,15 +1854,11 @@ const MeetingRoom = () => {
                         rel="noreferrer"
                       >
                         📎{" "}
-                        {
-                          msg.fileName
-                        }
+                        {msg.fileName}
                       </a>
                     ) : (
                       <div className="chat-text">
-                        {
-                          msg.message
-                        }
+                        {msg.message}
                       </div>
                     )}
 
@@ -1669,10 +1869,8 @@ const MeetingRoom = () => {
                           ).toLocaleTimeString(
                             [],
                             {
-                              hour:
-                                "2-digit",
-                              minute:
-                                "2-digit",
+                              hour: "2-digit",
+                              minute: "2-digit",
                             }
                           )
                         : ""}
@@ -1688,9 +1886,7 @@ const MeetingRoom = () => {
 
         <form
           className="chat-input-area"
-          onSubmit={
-            sendMessage
-          }
+          onSubmit={sendMessage}
         >
 
           <input
@@ -1726,11 +1922,8 @@ const MeetingRoom = () => {
       </aside>
 
       {/* FILE INPUT */}
-
       <input
-        ref={
-          fileInputRef
-        }
+        ref={fileInputRef}
         type="file"
         hidden
         onChange={
@@ -1739,22 +1932,16 @@ const MeetingRoom = () => {
       />
 
       {/* WHITEBOARD */}
-
       {whiteboardOpen && (
         <Whiteboard
-          meetingId={
-            meetingId
-          }
+          meetingId={meetingId}
           onClose={() =>
-            setWhiteboardOpen(
-              false
-            )
+            setWhiteboardOpen(false)
           }
         />
       )}
 
       {/* CONTROLS */}
-
       <footer className="meeting-controls-bar">
 
         <div className="control-group">
@@ -1765,9 +1952,7 @@ const MeetingRoom = () => {
                 ? ""
                 : "control-off"
             }`}
-            onClick={
-              toggleMic
-            }
+            onClick={toggleMic}
             title="Microphone"
           >
             {micOn
@@ -1781,9 +1966,7 @@ const MeetingRoom = () => {
                 ? ""
                 : "control-off"
             }`}
-            onClick={
-              toggleCamera
-            }
+            onClick={toggleCamera}
             title="Camera"
           >
             {cameraOn
@@ -1813,23 +1996,18 @@ const MeetingRoom = () => {
             }`}
             onClick={() =>
               setChatOpen(
-                (prev) =>
-                  !prev
+                (prev) => !prev
               )
             }
             title="Chat"
           >
             💬
 
-            {messages.length >
-              0 && (
+            {messages.length > 0 && (
               <span className="message-badge">
-                {
-                  messages.length
-                }
+                {messages.length}
               </span>
             )}
-
           </button>
 
           <button
@@ -1850,8 +2028,7 @@ const MeetingRoom = () => {
             }`}
             onClick={() =>
               setWhiteboardOpen(
-                (prev) =>
-                  !prev
+                (prev) => !prev
               )
             }
             title="Whiteboard"
