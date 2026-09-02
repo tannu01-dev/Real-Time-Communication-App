@@ -26,7 +26,7 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://real-time-communication-app-beige.vercel.app",
+  "https://real-time-communication-app-eight.vercel.app",
 ];
 
 app.use(
