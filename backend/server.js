@@ -24,16 +24,58 @@ const server = http.createServer(app);
 // CORS
 // =====================================================
 
-const CLIENT_URL = "https://real-time-communication-app-beige.vercel.app";
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://real-time-communication-app-beige.vercel.app",
+];
 
 app.use(
   cors({
-    origin: CLIENT_URL,
+    origin: function (origin, callback) {
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      console.log("❌ CORS BLOCKED:", origin);
+
+      return callback(
+        new Error("Not allowed by CORS")
+      );
+    },
+
     credentials: true,
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+    ],
   })
 );
 
+// =====================================================
+// BODY PARSER
+// =====================================================
+
 app.use(express.json());
+
+app.use(
+  express.urlencoded({
+    extended: true,
+  })
+);
 
 // =====================================================
 // API ROUTES
@@ -59,10 +101,22 @@ app.use(
 // =====================================================
 
 app.get("/", (req, res) => {
-  res.json({
+  res.status(200).json({
     success: true,
     message:
       "Real-Time Communication Server Running",
+  });
+});
+
+// =====================================================
+// HEALTH CHECK
+// =====================================================
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Server is healthy",
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -72,14 +126,117 @@ app.get("/", (req, res) => {
 
 const io = new Server(server, {
   cors: {
-    origin: CLIENT_URL,
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
+
+  transports: [
+    "websocket",
+    "polling",
+  ],
 });
 
+// =====================================================
+// CONNECTED USERS
 // userId -> socketId
+// =====================================================
+
 const connectedUsers = new Map();
+
+// =====================================================
+// HELPER
+// =====================================================
+
+const findHostSocket = async (
+  meetingId,
+  hostId
+) => {
+  const hostIdString = String(hostId);
+  const roomId = String(meetingId);
+
+  // ---------------------------------------------------
+  // 1. First check connectedUsers map
+  // ---------------------------------------------------
+
+  const mappedSocketId =
+    connectedUsers.get(hostIdString);
+
+  if (mappedSocketId) {
+    const mappedSocket =
+      io.sockets.sockets.get(
+        mappedSocketId
+      );
+
+    if (mappedSocket) {
+      return mappedSocket;
+    }
+
+    // Stale socket
+    connectedUsers.delete(
+      hostIdString
+    );
+  }
+
+  // ---------------------------------------------------
+  // 2. Check actual meeting room
+  // ---------------------------------------------------
+
+  const room =
+    io.sockets.adapter.rooms.get(
+      roomId
+    );
+
+  if (room) {
+    for (const socketId of room) {
+      const socket =
+        io.sockets.sockets.get(
+          socketId
+        );
+
+      if (
+        socket &&
+        socket.userId &&
+        String(socket.userId) ===
+          hostIdString
+      ) {
+        connectedUsers.set(
+          hostIdString,
+          socket.id
+        );
+
+        return socket;
+      }
+    }
+  }
+
+  // ---------------------------------------------------
+  // 3. Check all connected sockets
+  // ---------------------------------------------------
+
+  for (const [
+    socketId,
+    socket,
+  ] of io.sockets.sockets) {
+    if (
+      socket.userId &&
+      String(socket.userId) ===
+        hostIdString &&
+      socket.meetingId &&
+      String(socket.meetingId) ===
+        roomId
+    ) {
+      connectedUsers.set(
+        hostIdString,
+        socketId
+      );
+
+      return socket;
+    }
+  }
+
+  return null;
+};
 
 // =====================================================
 // SOCKET CONNECTION
@@ -87,8 +244,16 @@ const connectedUsers = new Map();
 
 io.on("connection", (socket) => {
   console.log(
+    "================================="
+  );
+
+  console.log(
     "🔌 SOCKET CONNECTED:",
     socket.id
+  );
+
+  console.log(
+    "================================="
   );
 
   // ===================================================
@@ -102,6 +267,7 @@ io.on("connection", (socket) => {
         console.log(
           "❌ REGISTER USER: Missing userId"
         );
+
         return;
       }
 
@@ -113,6 +279,7 @@ io.on("connection", (socket) => {
       );
 
       socket.userId = id;
+
       socket.userName =
         userName || "User";
 
@@ -151,137 +318,349 @@ io.on("connection", (socket) => {
 
   socket.on(
     "host-join-room",
-    ({
+    async ({
       meetingId,
       userId,
       userName,
     }) => {
-      if (!meetingId || !userId) {
-        console.log(
-          "❌ HOST JOIN: Missing data"
+      try {
+        if (
+          !meetingId ||
+          !userId
+        ) {
+          console.log(
+            "❌ HOST JOIN: Missing data"
+          );
+
+          return;
+        }
+
+        const id =
+          userId.toString();
+
+        const roomId =
+          meetingId.toString();
+
+        const hostRoom =
+          `host-${roomId}`;
+
+        // ------------------------------------------------
+        // Verify from database
+        // ------------------------------------------------
+
+        const meeting =
+          await Meeting.findOne({
+            meetingId: roomId,
+          });
+
+        if (!meeting) {
+          console.log(
+            "❌ HOST JOIN: Meeting not found"
+          );
+
+          return;
+        }
+
+        if (
+          String(meeting.host) !==
+          String(id)
+        ) {
+          console.log(
+            "❌ HOST JOIN: User is not host"
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------
+        // Register host
+        // ------------------------------------------------
+
+        connectedUsers.set(
+          id,
+          socket.id
         );
-        return;
+
+        socket.userId = id;
+
+        socket.userName =
+          userName || "Host";
+
+        socket.meetingId =
+          roomId;
+
+        socket.isHost = true;
+
+        socket.join(
+          hostRoom
+        );
+
+        socket.join(
+          roomId
+        );
+
+        console.log(
+          "================================="
+        );
+
+        console.log(
+          "👑 HOST REGISTERED"
+        );
+
+        console.log(
+          "Meeting ID:",
+          roomId
+        );
+
+        console.log(
+          "Host ID:",
+          id
+        );
+
+        console.log(
+          "Host Socket:",
+          socket.id
+        );
+
+        console.log(
+          "Host Room:",
+          hostRoom
+        );
+
+        console.log(
+          "Meeting Room:",
+          roomId
+        );
+
+        console.log(
+          "================================="
+        );
+
+        const room =
+          io.sockets.adapter.rooms.get(
+            roomId
+          );
+
+        io.to(roomId).emit(
+          "participant-count",
+          {
+            count: room
+              ? room.size
+              : 0,
+          }
+        );
+      } catch (error) {
+        console.error(
+          "❌ HOST JOIN ERROR:",
+          error
+        );
       }
-
-      const id =
-        userId.toString();
-
-      const hostRoom =
-        `host-${meetingId}`;
-
-      // Register host
-      connectedUsers.set(
-        id,
-        socket.id
-      );
-
-      socket.userId = id;
-      socket.userName =
-        userName || "Host";
-      socket.meetingId =
-        meetingId;
-      socket.isHost = true;
-
-      // Join host-specific room
-      socket.join(hostRoom);
-
-      console.log(
-        "================================="
-      );
-
-      console.log(
-        "👑 HOST REGISTERED"
-      );
-
-      console.log(
-        "Meeting ID:",
-        meetingId
-      );
-
-      console.log(
-        "Host ID:",
-        id
-      );
-
-      console.log(
-        "Host Name:",
-        socket.userName
-      );
-
-      console.log(
-        "Host Socket:",
-        socket.id
-      );
-
-      console.log(
-        "Host Room:",
-        hostRoom
-      );
-
-      console.log(
-        "================================="
-      );
     }
   );
 
   // ===================================================
-  // PARTICIPANT JOINS ACTUAL ROOM
+  // JOIN ROOM
   // ===================================================
 
   socket.on(
     "join-room",
-    ({
+    async ({
       meetingId,
       userId,
       userName,
     }) => {
-      if (!meetingId || !userId) {
-        return;
-      }
+      try {
+        if (
+          !meetingId ||
+          !userId
+        ) {
+          console.log(
+            "❌ JOIN ROOM: Missing data"
+          );
 
-      const id =
-        userId.toString();
-
-      socket.join(meetingId);
-
-      socket.meetingId =
-        meetingId;
-
-      socket.userId = id;
-
-      socket.userName =
-        userName || "User";
-
-      socket.isHost = false;
-
-      console.log(
-        `👤 USER JOINED ROOM: ${socket.userName} (${id}) -> ${meetingId}`
-      );
-
-      socket.to(meetingId).emit(
-        "user-joined",
-        {
-          userId: id,
-          userName:
-            userName || "User",
-          socketId:
-            socket.id,
+          return;
         }
-      );
 
-      const room =
-        io.sockets.adapter.rooms.get(
-          meetingId
+        const roomId =
+          meetingId.toString();
+
+        const id =
+          userId.toString();
+
+        // ------------------------------------------------
+        // Find meeting
+        // ------------------------------------------------
+
+        const meeting =
+          await Meeting.findOne({
+            meetingId: roomId,
+          });
+
+        if (!meeting) {
+          console.log(
+            "❌ JOIN ROOM: Meeting not found"
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------
+        // Set socket information
+        // ------------------------------------------------
+
+        socket.userId = id;
+
+        socket.userName =
+          userName || "User";
+
+        socket.meetingId =
+          roomId;
+
+        // ------------------------------------------------
+        // IMPORTANT:
+        // Automatically detect host
+        // ------------------------------------------------
+
+        const isHost =
+          String(meeting.host) ===
+          String(id);
+
+        if (isHost) {
+          socket.isHost = true;
+
+          connectedUsers.set(
+            id,
+            socket.id
+          );
+
+          console.log(
+            "👑 HOST AUTO-REGISTERED THROUGH join-room"
+          );
+
+          console.log(
+            "Host ID:",
+            id
+          );
+
+          console.log(
+            "Host Socket:",
+            socket.id
+          );
+
+          // Host-specific room
+          socket.join(
+            `host-${roomId}`
+          );
+        } else {
+          socket.isHost = false;
+        }
+
+        // ------------------------------------------------
+        // Check if already inside
+        // ------------------------------------------------
+
+        const roomBeforeJoin =
+          io.sockets.adapter.rooms.get(
+            roomId
+          );
+
+        const alreadyInside =
+          roomBeforeJoin?.has(
+            socket.id
+          );
+
+        // ------------------------------------------------
+        // Join meeting room
+        // ------------------------------------------------
+
+        socket.join(
+          roomId
         );
 
-      io.to(meetingId).emit(
-        "participant-count",
-        {
-          count: room
-            ? room.size
-            : 0,
+        console.log(
+          "================================="
+        );
+
+        console.log(
+          "🚪 USER JOINED MEETING ROOM"
+        );
+
+        console.log(
+          "Meeting ID:",
+          roomId
+        );
+
+        console.log(
+          "User ID:",
+          id
+        );
+
+        console.log(
+          "User Name:",
+          socket.userName
+        );
+
+        console.log(
+          "Socket ID:",
+          socket.id
+        );
+
+        console.log(
+          "Is Host:",
+          isHost
+        );
+
+        console.log(
+          "Already Inside:",
+          alreadyInside
+        );
+
+        console.log(
+          "================================="
+        );
+
+        // ------------------------------------------------
+        // Notify others
+        // ------------------------------------------------
+
+        if (!alreadyInside) {
+          socket
+            .to(roomId)
+            .emit(
+              "user-joined",
+              {
+                userId: id,
+                userName:
+                  socket.userName,
+                socketId:
+                  socket.id,
+              }
+            );
         }
-      );
+
+        // ------------------------------------------------
+        // Participant count
+        // ------------------------------------------------
+
+        const room =
+          io.sockets.adapter.rooms.get(
+            roomId
+          );
+
+        io.to(roomId).emit(
+          "participant-count",
+          {
+            count: room
+              ? room.size
+              : 0,
+          }
+        );
+      } catch (error) {
+        console.error(
+          "❌ JOIN ROOM ERROR:",
+          error
+        );
+      }
     }
   );
 
@@ -301,9 +680,7 @@ io.on("connection", (socket) => {
           "🔔 JOIN REQUEST RECEIVED"
         );
 
-        console.log(
-          data
-        );
+        console.log(data);
 
         console.log(
           "================================="
@@ -316,21 +693,33 @@ io.on("connection", (socket) => {
           userEmail,
         } = data || {};
 
-        if (!meetingId || !userId) {
+        if (
+          !meetingId ||
+          !userId
+        ) {
           console.log(
             "❌ INVALID JOIN REQUEST"
           );
+
+          socket.emit(
+            "join-request-error",
+            {
+              message:
+                "Invalid join request.",
+            }
+          );
+
           return;
         }
 
+        // ------------------------------------------------
         // Find meeting
+        // ------------------------------------------------
+
         const meeting =
           await Meeting.findOne({
             meetingId,
-          }).populate(
-            "host",
-            "name email"
-          );
+          });
 
         if (!meeting) {
           console.log(
@@ -349,10 +738,26 @@ io.on("connection", (socket) => {
           return;
         }
 
+        if (
+          meeting.status ===
+          "ended"
+        ) {
+          socket.emit(
+            "join-request-error",
+            {
+              message:
+                "This meeting has ended.",
+            }
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------
         // Host ID
+        // ------------------------------------------------
+
         const hostId =
-          meeting.host?._id
-            ?.toString() ||
           meeting.host?.toString();
 
         console.log(
@@ -364,23 +769,39 @@ io.on("connection", (socket) => {
           console.log(
             "❌ HOST ID NOT FOUND"
           );
+
+          socket.emit(
+            "join-request-error",
+            {
+              message:
+                "Meeting host not found.",
+            }
+          );
+
           return;
         }
 
+        // ------------------------------------------------
         // Find host socket
-        const hostSocketId =
-          connectedUsers.get(
+        // ------------------------------------------------
+
+        const hostSocket =
+          await findHostSocket(
+            meetingId,
             hostId
           );
 
-        console.log(
-          "👑 HOST SOCKET:",
-          hostSocketId
-        );
-
-        if (!hostSocketId) {
+        if (!hostSocket) {
           console.log(
             "❌ HOST SOCKET NOT FOUND"
+          );
+
+          console.log(
+            "Connected users:"
+          );
+
+          console.log(
+            [...connectedUsers.entries()]
           );
 
           socket.emit(
@@ -394,13 +815,54 @@ io.on("connection", (socket) => {
           return;
         }
 
+        // ------------------------------------------------
+        // Save participant socket info
+        // ------------------------------------------------
+
+        socket.userId =
+          userId.toString();
+
+        socket.userName =
+          userName || "User";
+
+        socket.userEmail =
+          userEmail || "";
+
+        socket.meetingId =
+          meetingId.toString();
+
+        console.log(
+          "================================="
+        );
+
         console.log(
           "📨 SENDING REQUEST TO HOST"
         );
 
-        io.to(
-          hostSocketId
-        ).emit(
+        console.log(
+          "Host Socket:",
+          hostSocket.id
+        );
+
+        console.log(
+          "Participant Socket:",
+          socket.id
+        );
+
+        console.log(
+          "Participant:",
+          userName
+        );
+
+        console.log(
+          "================================="
+        );
+
+        // ------------------------------------------------
+        // Send request to host
+        // ------------------------------------------------
+
+        hostSocket.emit(
           "join-request",
           {
             meetingId:
@@ -490,10 +952,11 @@ io.on("connection", (socket) => {
           meetingId:
             meetingId.toString(),
 
-          userId,
+          userId:
+            userId?.toString(),
 
           userName:
-            userName || "User",
+            userName || "Participant",
         }
       );
     }
@@ -518,12 +981,30 @@ io.on("connection", (socket) => {
       }
 
       console.log(
-        "❌ PARTICIPANT DENIED:",
-        {
-          meetingId,
-          userId,
-          socketId,
-        }
+        "================================="
+      );
+
+      console.log(
+        "❌ PARTICIPANT DENIED"
+      );
+
+      console.log(
+        "Meeting:",
+        meetingId
+      );
+
+      console.log(
+        "User:",
+        userId
+      );
+
+      console.log(
+        "Socket:",
+        socketId
+      );
+
+      console.log(
+        "================================="
       );
 
       io.to(
@@ -534,7 +1015,8 @@ io.on("connection", (socket) => {
           meetingId:
             meetingId.toString(),
 
-          userId,
+          userId:
+            userId?.toString(),
 
           message:
             "The host denied your request to join.",
@@ -553,15 +1035,33 @@ io.on("connection", (socket) => {
       target,
       offer,
     }) => {
-      if (!target || !offer) {
+      if (
+        !target ||
+        !offer
+      ) {
         return;
       }
+
+      console.log(
+        "📤 OFFER:",
+        socket.id,
+        "->",
+        target
+      );
 
       io.to(target).emit(
         "offer",
         {
           sender:
             socket.id,
+
+          userId:
+            socket.userId,
+
+          userName:
+            socket.userName ||
+            "Participant",
+
           offer,
         }
       );
@@ -578,15 +1078,26 @@ io.on("connection", (socket) => {
       target,
       answer,
     }) => {
-      if (!target || !answer) {
+      if (
+        !target ||
+        !answer
+      ) {
         return;
       }
+
+      console.log(
+        "📤 ANSWER:",
+        socket.id,
+        "->",
+        target
+      );
 
       io.to(target).emit(
         "answer",
         {
           sender:
             socket.id,
+
           answer,
         }
       );
@@ -610,11 +1121,19 @@ io.on("connection", (socket) => {
         return;
       }
 
+      console.log(
+        "📤 ICE:",
+        socket.id,
+        "->",
+        target
+      );
+
       io.to(target).emit(
         "ice-candidate",
         {
           sender:
             socket.id,
+
           candidate,
         }
       );
@@ -652,7 +1171,7 @@ io.on("connection", (socket) => {
       };
 
       io.to(
-        meetingId
+        meetingId.toString()
       ).emit(
         "receive-message",
         messageData
@@ -672,11 +1191,12 @@ io.on("connection", (socket) => {
       }
 
       io.to(
-        data.meetingId
+        data.meetingId.toString()
       ).emit(
         "receive-file",
         {
           ...data,
+
           time:
             data.time ||
             new Date().toISOString(),
@@ -697,7 +1217,9 @@ io.on("connection", (socket) => {
       }
 
       socket
-        .to(data.meetingId)
+        .to(
+          data.meetingId.toString()
+        )
         .emit(
           "whiteboard-draw",
           data
@@ -717,7 +1239,9 @@ io.on("connection", (socket) => {
       }
 
       socket
-        .to(data.meetingId)
+        .to(
+          data.meetingId.toString()
+        )
         .emit(
           "whiteboard-clear",
           data
@@ -739,16 +1263,19 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const roomId =
+        meetingId.toString();
+
       console.log(
-        `🚪 USER LEFT: ${userId} -> ${meetingId}`
+        `🚪 USER LEFT: ${userId} -> ${roomId}`
       );
 
       socket.leave(
-        meetingId
+        roomId
       );
 
       socket
-        .to(meetingId)
+        .to(roomId)
         .emit(
           "user-left",
           {
@@ -758,12 +1285,18 @@ io.on("connection", (socket) => {
           }
         );
 
+      if (socket.isHost) {
+        socket.leave(
+          `host-${roomId}`
+        );
+      }
+
       const room =
         io.sockets.adapter.rooms.get(
-          meetingId
+          roomId
         );
 
-      io.to(meetingId).emit(
+      io.to(roomId).emit(
         "participant-count",
         {
           count: room
@@ -780,22 +1313,27 @@ io.on("connection", (socket) => {
 
   socket.on(
     "meeting-ended",
-    ({ meetingId }) => {
+    ({
+      meetingId,
+    }) => {
       if (!meetingId) {
         return;
       }
 
+      const roomId =
+        meetingId.toString();
+
       console.log(
         "🛑 MEETING ENDED:",
-        meetingId
+        roomId
       );
 
-      io.to(
-        meetingId
-      ).emit(
+      io.to(roomId).emit(
         "meeting-ended",
         {
-          meetingId,
+          meetingId:
+            roomId,
+
           message:
             "The host ended the meeting.",
         }
@@ -809,10 +1347,23 @@ io.on("connection", (socket) => {
 
   socket.on(
     "disconnect",
-    () => {
+    (reason) => {
+      console.log(
+        "================================="
+      );
+
       console.log(
         "🔌 SOCKET DISCONNECTED:",
         socket.id
+      );
+
+      console.log(
+        "Reason:",
+        reason
+      );
+
+      console.log(
+        "================================="
       );
 
       if (socket.userId) {
@@ -830,9 +1381,73 @@ io.on("connection", (socket) => {
           );
         }
       }
+
+      if (
+        socket.meetingId
+      ) {
+        const roomId =
+          socket.meetingId.toString();
+
+        socket
+          .to(roomId)
+          .emit(
+            "user-left",
+            {
+              userId:
+                socket.userId,
+
+              socketId:
+                socket.id,
+            }
+          );
+
+        const room =
+          io.sockets.adapter.rooms.get(
+            roomId
+          );
+
+        io.to(roomId).emit(
+          "participant-count",
+          {
+            count: room
+              ? room.size
+              : 0,
+          }
+        );
+      }
     }
   );
 });
+
+// =====================================================
+// GLOBAL ERROR HANDLER
+// =====================================================
+
+app.use(
+  (err, req, res, next) => {
+    console.error(
+      "❌ SERVER ERROR:",
+      err
+    );
+
+    if (
+      err.message ===
+      "Not allowed by CORS"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "CORS origin not allowed",
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message:
+        "Internal server error",
+    });
+  }
+);
 
 // =====================================================
 // SERVER START
@@ -849,15 +1464,32 @@ server.listen(
     );
 
     console.log(
-      "Communication App Server Running"
+      "🚀 Communication App Server Running"
     );
 
     console.log(
-      `http://localhost:${PORT}`
+      `🌐 Port: ${PORT}`
     );
 
     console.log(
-      "Socket.io Ready"
+      `🏠 Local: http://localhost:${PORT}`
+    );
+
+    console.log(
+      "🔌 Socket.io Ready"
+    );
+
+    console.log(
+      "🌍 Allowed Frontends:"
+    );
+
+    allowedOrigins.forEach(
+      (origin) => {
+        console.log(
+          "   →",
+          origin
+        );
+      }
     );
 
     console.log(

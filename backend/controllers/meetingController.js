@@ -1,23 +1,45 @@
 const crypto = require("crypto");
 const Meeting = require("../models/Meeting");
+
 const generateMeetingId = () => {
   return crypto.randomBytes(6).toString("hex");
 };
+
+// Get logged-in user's ID safely
+const getUserId = (req) => {
+  return req.user?._id || req.user?.id;
+};
+
+// ===============================
+// CREATE MEETING
+// ===============================
 const createMeeting = async (req, res) => {
   try {
+    const userId = getUserId(req);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
     const meetingId = generateMeetingId();
 
     const meeting = await Meeting.create({
       meetingId,
-      host: req.user._id,
-      participants: [req.user._id],
+      host: userId,
+      participants: [userId],
       pendingRequests: [],
     });
 
+    console.log("MEETING CREATED");
+    console.log("Meeting ID:", meeting.meetingId);
+    console.log("Host ID:", String(meeting.host));
+
     res.status(201).json({
       success: true,
-      message:
-        "Meeting created successfully",
+      message: "Meeting created successfully",
 
       meeting: {
         meetingId: meeting.meetingId,
@@ -26,121 +48,128 @@ const createMeeting = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error(
-      "CREATE MEETING ERROR:",
-      error
-    );
+    console.error("CREATE MEETING ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message:
-        "Unable to create meeting",
+      message: "Unable to create meeting",
     });
   }
 };
 
+// ===============================
+// JOIN MEETING
+// ===============================
 const joinMeeting = async (req, res) => {
   try {
+    const userId = getUserId(req);
     const { meetingId } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
 
     if (!meetingId) {
       return res.status(400).json({
         success: false,
-        message:
-          "Meeting ID is required",
+        message: "Meeting ID is required",
       });
     }
 
-    const meeting =
-      await Meeting.findOne({
-        meetingId,
-      });
+    const meeting = await Meeting.findOne({
+      meetingId,
+    });
 
     if (!meeting) {
       return res.status(404).json({
         success: false,
-        message:
-          "Meeting not found",
+        message: "Meeting not found",
       });
     }
 
     if (meeting.status === "ended") {
       return res.status(400).json({
         success: false,
-        message:
-          "This meeting has ended",
+        message: "This meeting has ended",
       });
     }
-    if (
-      meeting.host.toString() ===
-      req.user._id.toString()
-    ) {
+
+    // ===============================
+    // HOST
+    // ===============================
+    if (String(meeting.host) === String(userId)) {
+      console.log("HOST JOINED");
+      console.log("Meeting Host:", String(meeting.host));
+      console.log("Current User:", String(userId));
+
       return res.status(200).json({
         success: true,
         admitted: true,
         isHost: true,
-        message:
-          "You are the host",
+        message: "You are the host",
+
         meeting: {
-          meetingId:
-            meeting.meetingId,
+          meetingId: meeting.meetingId,
           host: meeting.host,
-          participants:
-            meeting.participants,
-          status:
-            meeting.status,
+          participants: meeting.participants,
+          status: meeting.status,
         },
       });
     }
-    const alreadyParticipant =
-      meeting.participants.some(
-        (participant) =>
-          participant.toString() ===
-          req.user._id.toString()
-      );
+
+    // ===============================
+    // ALREADY PARTICIPANT
+    // ===============================
+    const alreadyParticipant = meeting.participants.some(
+      (participant) =>
+        String(participant) === String(userId)
+    );
 
     if (alreadyParticipant) {
       return res.status(200).json({
         success: true,
         admitted: true,
         isHost: false,
-        message:
-          "You are already admitted",
+        message: "You are already admitted",
+
         meeting: {
-          meetingId:
-            meeting.meetingId,
+          meetingId: meeting.meetingId,
           host: meeting.host,
-          participants:
-            meeting.participants,
-          status:
-            meeting.status,
+          participants: meeting.participants,
+          status: meeting.status,
         },
       });
     }
-    const alreadyRequested =
-      meeting.pendingRequests.some(
-        (request) =>
-          request.user.toString() ===
-          req.user._id.toString()
-      );
+
+    // ===============================
+    // ALREADY REQUESTED
+    // ===============================
+    const alreadyRequested = meeting.pendingRequests.some(
+      (request) =>
+        String(request.user) === String(userId)
+    );
 
     if (alreadyRequested) {
       return res.status(200).json({
         success: true,
         admitted: false,
         pending: true,
-        message:
-          "Your join request is already pending",
+        message: "Your join request is already pending",
       });
     }
 
+    // ===============================
+    // CREATE JOIN REQUEST
+    // ===============================
     meeting.pendingRequests.push({
-      user: req.user._id,
+      user: userId,
     });
 
     await meeting.save();
 
-    // Populate user information
     await meeting.populate(
       "pendingRequests.user",
       "name email"
@@ -155,37 +184,48 @@ const joinMeeting = async (req, res) => {
       success: true,
       admitted: false,
       pending: true,
+
       message:
         "Join request sent. Please wait for the host.",
+
       request: {
-        userId:
-          newRequest.user._id,
-        name:
-          newRequest.user.name,
-        email:
-          newRequest.user.email,
+        userId: newRequest.user._id,
+        name: newRequest.user.name,
+        email: newRequest.user.email,
       },
     });
   } catch (error) {
-    console.error(
-      "JOIN MEETING ERROR:",
-      error
-    );
+    console.error("JOIN MEETING ERROR:", error);
 
     res.status(500).json({
       success: false,
-      message:
-        "Unable to send join request",
+      message: "Unable to send join request",
     });
   }
 };
 
+// ===============================
+// ADMIT PARTICIPANT
+// ===============================
 const admitParticipant = async (req, res) => {
   try {
+    const userId = getUserId(req);
     const { meetingId } = req.params;
-    const { userId } = req.body;
+    const { userId: participantId } = req.body;
+
+    console.log("\n========== ADMIT REQUEST ==========");
+    console.log("Meeting ID:", meetingId);
+    console.log("Logged User ID:", userId ? String(userId) : "NO USER");
+    console.log("Participant ID:", participantId || "NO PARTICIPANT");
 
     if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
+    if (!participantId) {
       return res.status(400).json({
         success: false,
         message: "User ID is required",
@@ -203,48 +243,59 @@ const admitParticipant = async (req, res) => {
       });
     }
 
+    console.log("Meeting Host ID:", String(meeting.host));
+    console.log(
+      "Is Host:",
+      String(meeting.host) === String(userId)
+    );
+
+    // ===============================
     // ONLY HOST CAN ADMIT
-    if (
-      String(meeting.host) !==
-      String(req.user._id)
-    ) {
+    // ===============================
+    if (String(meeting.host) !== String(userId)) {
+      console.log("❌ ADMIT DENIED - USER IS NOT HOST");
+      console.log("Host:", String(meeting.host));
+      console.log("User:", String(userId));
+
       return res.status(403).json({
         success: false,
-        message:
-          "Only host can admit participants",
+        message: "Only host can admit participants",
       });
     }
 
-    // FIND USER REQUEST
+    // ===============================
+    // FIND REQUEST
+    // ===============================
     const requestIndex =
       meeting.pendingRequests.findIndex(
         (request) =>
-          String(request.user) ===
-          String(userId)
+          String(request.user) === String(participantId)
       );
 
     if (requestIndex === -1) {
       return res.status(404).json({
         success: false,
-        message:
-          "Join request not found",
+        message: "Join request not found",
       });
     }
 
-    // CHECK IF ALREADY PARTICIPANT
+    // ===============================
+    // CHECK ALREADY PARTICIPANT
+    // ===============================
     const alreadyParticipant =
       meeting.participants.some(
         (participant) =>
-          String(participant) ===
-          String(userId)
+          String(participant) === String(participantId)
       );
 
-    // ADD USER
+    // ===============================
+    // ADD PARTICIPANT
+    // ===============================
     if (!alreadyParticipant) {
-      meeting.participants.push(userId);
+      meeting.participants.push(participantId);
     }
 
-    // REMOVE ONLY THIS REQUEST
+    // Remove only this request
     meeting.pendingRequests.splice(
       requestIndex,
       1
@@ -252,11 +303,20 @@ const admitParticipant = async (req, res) => {
 
     await meeting.save();
 
+    console.log("✅ PARTICIPANT ADMITTED");
+    console.log("Participant:", participantId);
+    console.log(
+      "Total Participants:",
+      meeting.participants.length
+    );
+    console.log("=================================\n");
+
     return res.status(200).json({
       success: true,
-      message:
-        "Participant admitted successfully",
-      userId,
+      message: "Participant admitted successfully",
+
+      userId: participantId,
+
       participantCount:
         meeting.participants.length,
     });
@@ -268,19 +328,28 @@ const admitParticipant = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to admit participant",
+      message: "Unable to admit participant",
     });
   }
 };
 
-
+// ===============================
+// DENY PARTICIPANT
+// ===============================
 const denyParticipant = async (req, res) => {
   try {
+    const userId = getUserId(req);
     const { meetingId } = req.params;
-    const { userId } = req.body;
+    const { userId: participantId } = req.body;
 
     if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
+    if (!participantId) {
       return res.status(400).json({
         success: false,
         message: "User ID is required",
@@ -299,33 +368,26 @@ const denyParticipant = async (req, res) => {
     }
 
     // ONLY HOST CAN DENY
-    if (
-      String(meeting.host) !==
-      String(req.user._id)
-    ) {
+    if (String(meeting.host) !== String(userId)) {
       return res.status(403).json({
         success: false,
-        message:
-          "Only host can deny participants",
+        message: "Only host can deny participants",
       });
     }
 
     const requestIndex =
       meeting.pendingRequests.findIndex(
         (request) =>
-          String(request.user) ===
-          String(userId)
+          String(request.user) === String(participantId)
       );
 
     if (requestIndex === -1) {
       return res.status(404).json({
         success: false,
-        message:
-          "Join request not found",
+        message: "Join request not found",
       });
     }
 
-    // REMOVE THIS USER ONLY
     meeting.pendingRequests.splice(
       requestIndex,
       1
@@ -335,9 +397,8 @@ const denyParticipant = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message:
-        "Join request denied",
-      userId,
+      message: "Join request denied",
+      userId: participantId,
     });
   } catch (error) {
     console.error(
@@ -347,12 +408,14 @@ const denyParticipant = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message:
-        "Unable to deny participant",
+      message: "Unable to deny participant",
     });
   }
 };
 
+// ===============================
+// GET MEETING
+// ===============================
 const getMeeting = async (req, res) => {
   try {
     const { meetingId } = req.params;
@@ -377,8 +440,7 @@ const getMeeting = async (req, res) => {
     if (!meeting) {
       return res.status(404).json({
         success: false,
-        message:
-          "Meeting not found",
+        message: "Meeting not found",
       });
     }
 
@@ -394,15 +456,25 @@ const getMeeting = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message:
-        "Server error",
+      message: "Server error",
     });
   }
 };
 
+// ===============================
+// END MEETING
+// ===============================
 const endMeeting = async (req, res) => {
   try {
+    const userId = getUserId(req);
     const { meetingId } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
 
     const meeting =
       await Meeting.findOne({
@@ -412,15 +484,12 @@ const endMeeting = async (req, res) => {
     if (!meeting) {
       return res.status(404).json({
         success: false,
-        message:
-          "Meeting not found",
+        message: "Meeting not found",
       });
     }
 
-    if (
-      meeting.host.toString() !==
-      req.user._id.toString()
-    ) {
+    // ONLY HOST CAN END
+    if (String(meeting.host) !== String(userId)) {
       return res.status(403).json({
         success: false,
         message:
@@ -450,6 +519,7 @@ const endMeeting = async (req, res) => {
     });
   }
 };
+
 module.exports = {
   createMeeting,
   joinMeeting,
@@ -458,4 +528,3 @@ module.exports = {
   getMeeting,
   endMeeting,
 };
-
